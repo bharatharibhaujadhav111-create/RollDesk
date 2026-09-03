@@ -1,0 +1,15 @@
+{
+  "totalPdfs": 3,
+  "totalRecords": 2911,
+  "status": "ready",
+  "lastIndexedAt": "2026-09-03T06:35:36.841Z",
+  "indexVersion": 4,
+  "progress": 100,
+  "indexedPdfs": 3,
+  "failedPdfs": 0,
+  "ocrPages": 117,
+  "recordsWithEpic": 2883,
+  "recordsWithRelativeName": 2833,
+  "recordsWithDetails": 2826,
+  "warnings": []
+}

@@ -1,0 +1,1 @@
+- [OpenAPI numeric compatibility](openapi-numeric-compatibility.md) — generated Zod in this workspace expects numeric fields rather than integer formats.

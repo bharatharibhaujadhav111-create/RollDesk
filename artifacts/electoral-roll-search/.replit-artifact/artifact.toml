@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Electoral Roll Search"
+description = "A fast public search experience for electoral roll records with an administrator workspace for managing source PDFs and rebuilding the local search index."
+version = "1.0.0"
+id = "artifacts/electoral-roll-search"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 22996
+
+[services.development]
+run = "pnpm --filter @workspace/electoral-roll-search run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/electoral-roll-search", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/electoral-roll-search/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22996"
+BASE_PATH = "/"

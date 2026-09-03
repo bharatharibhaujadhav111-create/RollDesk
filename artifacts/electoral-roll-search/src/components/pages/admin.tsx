@@ -1,0 +1,653 @@
+"use client";
+
+import { useRef, useState } from "react";
+import {
+  Activity,
+  AlertCircle,
+  Check,
+  Database,
+  FileArchive,
+  FileText,
+  HardDrive,
+  Pencil,
+  RefreshCw,
+  Trash2,
+  Upload,
+  X,
+} from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import {
+  getGetAdminStatsQueryKey,
+  getListPdfAssetsQueryKey,
+  useDeletePdf,
+  useGetAdminStats,
+  useListPdfAssets,
+  useRenamePdf,
+  useRebuildSearchIndex,
+  useUploadPdf,
+  type PdfAsset,
+} from "@workspace/api-client-react";
+import { StatusPill } from "@/components/status-pill";
+
+function formatCount(value: number | null | undefined) {
+  return (value ?? 0).toLocaleString();
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatDate(value: string | null | undefined) {
+  if (!value) return "Not yet";
+  return new Intl.DateTimeFormat("en-GB", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
+function StatSkeleton() {
+  return (
+    <div className="h-[116px] animate-pulse rounded-xl border border-border bg-card/75" />
+  );
+}
+
+function AssetRow({
+  asset,
+  onChanged,
+}: {
+  asset: PdfAsset;
+  onChanged: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(asset.name);
+  const renamePdf = useRenamePdf();
+  const deletePdf = useDeletePdf();
+  const saving = renamePdf.isPending || deletePdf.isPending;
+
+  function saveName() {
+    const nextName = name.trim();
+    if (!nextName || nextName === asset.name) {
+      setName(asset.name);
+      setEditing(false);
+      return;
+    }
+    renamePdf.mutate(
+      { id: asset.id, data: { name: nextName } },
+      {
+        onSuccess: () => {
+          setEditing(false);
+          queryClient.invalidateQueries({
+            queryKey: getListPdfAssetsQueryKey(),
+          });
+          onChanged();
+        },
+      },
+    );
+  }
+
+  function removeAsset() {
+    if (!window.confirm(`Remove “${asset.name}” and its indexed records?`))
+      return;
+    deletePdf.mutate(
+      { id: asset.id },
+      {
+        onSuccess: () => {
+          queryClient.invalidateQueries({
+            queryKey: getListPdfAssetsQueryKey(),
+          });
+          queryClient.invalidateQueries({
+            queryKey: getGetAdminStatsQueryKey(),
+          });
+          onChanged();
+        },
+      },
+    );
+  }
+
+  return (
+    <div
+      data-testid={`row-pdf-${asset.id}`}
+      className="grid gap-4 border-b border-border/70 px-5 py-5 last:border-0 lg:grid-cols-[minmax(0,1.5fr)_110px_90px_160px_124px] lg:items-center"
+    >
+      <div className="min-w-0">
+        <div className="flex items-center gap-3">
+          <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-secondary text-primary">
+            <FileText size={17} />
+          </span>
+          <div className="min-w-0 flex-1">
+            {editing ? (
+              <div className="flex max-w-md items-center gap-2">
+                <input
+                  autoFocus
+                  data-testid={`input-rename-pdf-${asset.id}`}
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") saveName();
+                    if (event.key === "Escape") {
+                      setName(asset.name);
+                      setEditing(false);
+                    }
+                  }}
+                  className="min-w-0 flex-1 rounded-md border border-accent bg-background px-2 py-1 text-sm outline-none"
+                />
+                <button
+                  type="button"
+                  aria-label="Save PDF name"
+                  data-testid={`button-save-rename-${asset.id}`}
+                  onClick={saveName}
+                  disabled={saving}
+                  className="text-emerald-700"
+                >
+                  <Check size={16} />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Cancel rename"
+                  data-testid={`button-cancel-rename-${asset.id}`}
+                  onClick={() => {
+                    setName(asset.name);
+                    setEditing(false);
+                  }}
+                  className="text-muted-foreground"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            ) : (
+              <p className="truncate text-sm font-bold text-foreground">
+                {asset.name}
+              </p>
+            )}
+            <p className="mt-0.5 font-mono-app text-[10px] uppercase tracking-[.08em] text-muted-foreground">
+              {formatBytes(asset.sizeBytes)} · uploaded{" "}
+              {formatDate(asset.uploadedAt)}
+            </p>
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center justify-between lg:block">
+        <p className="font-mono-app text-[9px] uppercase tracking-[.1em] text-muted-foreground lg:hidden">
+          Pages
+        </p>
+        <p className="font-mono-app text-sm font-bold">
+          {formatCount(asset.pageCount)}
+        </p>
+      </div>
+      <div className="flex items-center justify-between lg:block">
+        <p className="font-mono-app text-[9px] uppercase tracking-[.1em] text-muted-foreground lg:hidden">
+          Records
+        </p>
+        <p className="font-mono-app text-sm font-bold">
+          {formatCount(asset.indexedRecords)}
+        </p>
+      </div>
+      <div className="flex items-center justify-between lg:block">
+        <p className="font-mono-app text-[9px] uppercase tracking-[.1em] text-muted-foreground lg:hidden">
+          Status
+        </p>
+        <StatusPill status={asset.status} />
+      </div>
+      <div className="flex items-center justify-end gap-1 border-t border-border/60 pt-3 lg:border-0 lg:pt-0">
+        {asset.fileUrl ? (
+          <a
+            data-testid={`link-download-pdf-${asset.id}`}
+            href={asset.fileUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-md p-2 text-muted-foreground hover:bg-secondary hover:text-foreground"
+            aria-label={`Open ${asset.name}`}
+          >
+            <FileArchive size={16} />
+          </a>
+        ) : null}
+        <button
+          type="button"
+          data-testid={`button-edit-pdf-${asset.id}`}
+          disabled={saving}
+          onClick={() => setEditing(true)}
+          className="rounded-md p-2 text-muted-foreground hover:bg-secondary hover:text-foreground"
+          aria-label={`Rename ${asset.name}`}
+        >
+          <Pencil size={16} />
+        </button>
+        <button
+          type="button"
+          data-testid={`button-delete-pdf-${asset.id}`}
+          disabled={saving}
+          onClick={removeAsset}
+          className="rounded-md p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+          aria-label={`Delete ${asset.name}`}
+        >
+          <Trash2 size={16} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export default function AdminPage() {
+  const queryClient = useQueryClient();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [filter, setFilter] = useState("");
+  const [uploadError, setUploadError] = useState("");
+  const [notice, setNotice] = useState("");
+  const pdfParams = filter ? { q: filter } : undefined;
+  const statsQuery = useGetAdminStats({
+    query: { queryKey: getGetAdminStatsQueryKey() },
+  });
+  const assetsQuery = useListPdfAssets(pdfParams, {
+    query: {
+      queryKey: getListPdfAssetsQueryKey(pdfParams),
+    },
+  });
+  const uploadPdf = useUploadPdf();
+  const rebuildIndex = useRebuildSearchIndex();
+  const stats = statsQuery.data;
+  const assets = assetsQuery.data || [];
+  const noPdfAssets =
+    assetsQuery.isError &&
+    (assetsQuery.error as { status?: number } | null)?.status === 404;
+
+  function uploadFile(file?: File) {
+    if (!file) return;
+    setUploadError("");
+    setNotice("");
+    if (
+      file.type !== "application/pdf" &&
+      !file.name.toLowerCase().endsWith(".pdf")
+    ) {
+      setUploadError("Please choose a PDF file.");
+      return;
+    }
+    uploadPdf.mutate(
+      { data: file, params: { filename: file.name } },
+      {
+        onSuccess: () => {
+          setNotice(`${file.name} uploaded. Indexing has started.`);
+          queryClient.invalidateQueries({
+            queryKey: getListPdfAssetsQueryKey(),
+          });
+          queryClient.invalidateQueries({
+            queryKey: getGetAdminStatsQueryKey(),
+          });
+        },
+        onError: () =>
+          setUploadError(
+            "Upload could not be completed. Check the file and try again.",
+          ),
+      },
+    );
+  }
+
+  function uploadFiles(files: FileList | null) {
+    if (!files?.length) return;
+    const selected = Array.from(files);
+    const invalid = selected.find(
+      (file) =>
+        file.type !== "application/pdf" &&
+        !file.name.toLowerCase().endsWith(".pdf"),
+    );
+    if (invalid) {
+      setUploadError(`${invalid.name} is not a PDF file.`);
+      return;
+    }
+    selected.forEach((file) => uploadFile(file));
+  }
+
+  function rebuild() {
+    setNotice("");
+    rebuildIndex.mutate(undefined, {
+      onSuccess: () => {
+        setNotice("Search index rebuild started in the background.");
+        queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });
+      },
+      onError: () =>
+        setUploadError("The index could not be rebuilt. Try again."),
+    });
+  }
+
+  return (
+    <main className="mx-auto max-w-[1240px] px-5 py-10 sm:px-8 sm:py-14">
+      <div className="flex flex-col justify-between gap-6 border-b border-border pb-8 sm:flex-row sm:items-end">
+        <div>
+          <p className="font-mono-app text-[10px] font-bold uppercase tracking-[.16em] text-accent">
+            Admin desk / collection health
+          </p>
+          <h1 className="mt-3 text-4xl font-bold tracking-[-.06em] text-primary sm:text-5xl">
+            Keep the rolls findable.
+          </h1>
+          <p className="mt-3 max-w-xl text-sm leading-6 text-muted-foreground">
+            Manage source PDFs and watch the local index as it turns paper into
+            dependable search.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 font-mono-app text-[10px] uppercase tracking-[.1em] text-muted-foreground">
+          <span className="size-2 rounded-full bg-emerald-700" /> Admin access
+        </div>
+      </div>
+
+      <section
+        className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4"
+        aria-label="Index statistics"
+      >
+        {statsQuery.isLoading ? (
+          <>
+            {[1, 2, 3, 4].map((item) => (
+              <StatSkeleton key={item} />
+            ))}
+          </>
+        ) : statsQuery.isError ? (
+          <div
+            className="col-span-full rounded-xl border border-destructive/25 bg-destructive/5 p-6 text-sm"
+            data-testid="error-admin-stats"
+          >
+            <AlertCircle className="mb-2 text-destructive" size={20} />
+            <p className="font-bold">Health data unavailable</p>
+            <button
+              type="button"
+              data-testid="button-retry-admin-stats"
+              onClick={() => statsQuery.refetch()}
+              className="mt-3 font-semibold text-accent underline"
+            >
+              Retry
+            </button>
+          </div>
+        ) : stats ? (
+          <>
+            <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-sm)]">
+              <div className="flex items-center justify-between">
+                <p className="font-mono-app text-[10px] uppercase tracking-[.12em] text-muted-foreground">
+                  Source PDFs
+                </p>
+                <FileArchive size={17} className="text-accent" />
+              </div>
+              <p
+                data-testid="text-total-pdfs"
+                className="mt-4 text-3xl font-bold tracking-[-.05em] text-primary"
+              >
+                {formatCount(stats.totalPdfs)}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                managed documents
+              </p>
+            </div>
+            <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-sm)]">
+              <div className="flex items-center justify-between">
+                <p className="font-mono-app text-[10px] uppercase tracking-[.12em] text-muted-foreground">
+                  Indexed records
+                </p>
+                <Database size={17} className="text-accent" />
+              </div>
+              <p
+                data-testid="text-total-records"
+                className="mt-4 text-3xl font-bold tracking-[-.05em] text-primary"
+              >
+                {formatCount(stats.totalRecords)}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                available to search
+              </p>
+            </div>
+            <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-sm)]">
+              <div className="flex items-center justify-between">
+                <p className="font-mono-app text-[10px] uppercase tracking-[.12em] text-muted-foreground">
+                  Index status
+                </p>
+                <Activity size={17} className="text-accent" />
+              </div>
+              <div className="mt-4">
+                <StatusPill status={stats.status} />
+              </div>
+              <p className="mt-3 text-xs text-muted-foreground">
+                version {stats.indexVersion}
+              </p>
+            </div>
+            <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-sm)]">
+              <div className="flex items-center justify-between">
+                <p className="font-mono-app text-[10px] uppercase tracking-[.12em] text-muted-foreground">
+                  Last indexed
+                </p>
+                <HardDrive size={17} className="text-accent" />
+              </div>
+              <p
+                data-testid="text-last-indexed"
+                className="mt-4 text-sm font-bold text-primary"
+              >
+                {formatDate(stats.lastIndexedAt)}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {stats.progress}% complete
+              </p>
+            </div>
+          </>
+        ) : null}
+      </section>
+
+      {stats && stats.progress > 0 && stats.progress < 100 ? (
+        <div
+          className="mt-5 rounded-xl border border-accent/25 bg-accent/5 p-4"
+          data-testid="status-index-progress"
+        >
+          <div className="flex items-center justify-between text-sm font-bold">
+            <span>Indexing in progress</span>
+            <span className="font-mono-app text-accent">{stats.progress}%</span>
+          </div>
+          <div className="mt-3 h-2 overflow-hidden rounded-full bg-secondary">
+            <div
+              className="h-full rounded-full bg-accent transition-all"
+              style={{ width: `${stats.progress}%` }}
+            />
+          </div>
+        </div>
+      ) : null}
+      {stats ? (
+        <section
+          className="mt-5 rounded-xl border border-border bg-card p-5"
+          aria-label="Index coverage details"
+        >
+          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+            <div>
+              <p className="font-mono-app text-[10px] font-bold uppercase tracking-[.14em] text-accent">
+                Index coverage
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                How much usable detail was recovered from the source PDFs.
+              </p>
+            </div>
+            <p className="font-mono-app text-[10px] uppercase tracking-[.1em] text-muted-foreground">
+              {stats.indexedPdfs}/{stats.totalPdfs} PDFs completed ·{" "}
+              {stats.ocrPages} OCR pages
+            </p>
+          </div>
+          <div className="mt-5 grid gap-3 sm:grid-cols-3">
+            <div className="rounded-lg bg-secondary/55 p-3">
+              <p className="font-mono-app text-[9px] uppercase tracking-[.1em] text-muted-foreground">
+                EPIC captured
+              </p>
+              <p className="mt-1 text-lg font-bold text-primary">
+                {formatCount(stats.recordsWithEpic)}
+              </p>
+            </div>
+            <div className="rounded-lg bg-secondary/55 p-3">
+              <p className="font-mono-app text-[9px] uppercase tracking-[.1em] text-muted-foreground">
+                Relative names
+              </p>
+              <p className="mt-1 text-lg font-bold text-primary">
+                {formatCount(stats.recordsWithRelativeName)}
+              </p>
+            </div>
+            <div className="rounded-lg bg-secondary/55 p-3">
+              <p className="font-mono-app text-[9px] uppercase tracking-[.1em] text-muted-foreground">
+                Detailed records
+              </p>
+              <p className="mt-1 text-lg font-bold text-primary">
+                {formatCount(stats.recordsWithDetails)}
+              </p>
+            </div>
+          </div>
+          {stats.warnings.length > 0 ? (
+            <div className="mt-4 rounded-lg border border-amber-700/20 bg-amber-700/5 p-3 text-xs text-amber-900">
+              <p className="font-bold">
+                {stats.failedPdfs} PDF{stats.failedPdfs === 1 ? "" : "s"} need
+                attention
+              </p>
+              <ul className="mt-2 list-disc space-y-1 pl-4">
+                {stats.warnings.slice(0, 5).map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      <section className="mt-10">
+        <div className="mb-4 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+          <div>
+            <h2 className="text-xl font-bold tracking-[-.03em] text-primary">
+              Source PDFs
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              The files behind every public result.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              data-testid="button-rebuild-index"
+              onClick={rebuild}
+              disabled={rebuildIndex.isPending}
+              className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs font-bold transition-colors hover:bg-secondary disabled:opacity-50"
+            >
+              <RefreshCw
+                size={14}
+                className={rebuildIndex.isPending ? "animate-spin" : ""}
+              />{" "}
+              {rebuildIndex.isPending ? "Rebuilding" : "Rebuild index"}
+            </button>
+            <button
+              type="button"
+              data-testid="button-upload-pdf"
+              onClick={() => inputRef.current?.click()}
+              disabled={uploadPdf.isPending}
+              className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+            >
+              <Upload size={14} />{" "}
+              {uploadPdf.isPending ? "Uploading" : "Upload PDF"}
+            </button>
+            <input
+              ref={inputRef}
+              data-testid="input-upload-pdf"
+              type="file"
+              multiple
+              accept="application/pdf,.pdf"
+              className="hidden"
+              onChange={(event) => {
+                uploadFiles(event.target.files);
+                event.currentTarget.value = "";
+              }}
+            />
+          </div>
+        </div>
+        {(uploadError || notice) && (
+          <div
+            className={`mb-4 flex items-center justify-between rounded-lg border px-4 py-3 text-sm ${uploadError ? "border-destructive/25 bg-destructive/5 text-destructive" : "border-emerald-700/20 bg-emerald-700/5 text-emerald-800"}`}
+            data-testid={
+              uploadError ? "error-admin-action" : "status-admin-action"
+            }
+          >
+            <span>{uploadError || notice}</span>
+            <button
+              type="button"
+              data-testid="button-dismiss-admin-notice"
+              onClick={() => {
+                setUploadError("");
+                setNotice("");
+              }}
+              aria-label="Dismiss message"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        )}
+        <div className="mb-3 flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3">
+          <SearchIcon />
+          <input
+            data-testid="input-filter-pdfs"
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            placeholder="Filter by filename"
+            className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/65"
+          />
+          <span className="font-mono-app text-[10px] uppercase tracking-[.1em] text-muted-foreground">
+            {assets.length} files
+          </span>
+        </div>
+        <div className="overflow-hidden rounded-xl border border-border bg-card shadow-[var(--shadow-sm)]">
+          <div className="hidden grid-cols-[minmax(0,1.5fr)_110px_90px_160px_124px] gap-4 border-b border-border bg-secondary/45 px-5 py-3 font-mono-app text-[9px] uppercase tracking-[.12em] text-muted-foreground lg:grid">
+            <span>Document</span>
+            <span>Pages</span>
+            <span>Records</span>
+            <span>Status</span>
+            <span className="text-right">Actions</span>
+          </div>
+          {assetsQuery.isLoading ? (
+            <div className="space-y-3 p-5" data-testid="loading-pdf-assets">
+              {[1, 2, 3].map((item) => (
+                <div
+                  key={item}
+                  className="h-16 animate-pulse rounded-lg bg-secondary/60"
+                />
+              ))}
+            </div>
+          ) : assetsQuery.isError && !noPdfAssets ? (
+            <div className="p-10 text-center" data-testid="error-pdf-assets">
+              <AlertCircle className="mx-auto text-destructive" size={22} />
+              <p className="mt-3 text-sm font-bold">
+                Could not load PDF assets
+              </p>
+              <button
+                type="button"
+                data-testid="button-retry-pdf-assets"
+                onClick={() => assetsQuery.refetch()}
+                className="mt-3 text-sm font-semibold text-accent underline"
+              >
+                Retry
+              </button>
+            </div>
+          ) : assets.length === 0 ? (
+            <div className="p-10 text-center" data-testid="empty-pdf-assets">
+              <FileArchive
+                className="mx-auto text-muted-foreground"
+                size={24}
+              />
+              <p className="mt-3 text-sm font-bold text-primary">
+                No PDFs in this view
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {filter
+                  ? "Try a different filename."
+                  : "Upload your first electoral roll PDF to begin."}
+              </p>
+            </div>
+          ) : (
+            assets.map((asset) => (
+              <AssetRow key={asset.id} asset={asset} onChanged={() => {}} />
+            ))
+          )}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <span className="text-muted-foreground" aria-hidden="true">
+      <FileText size={16} />
+    </span>
+  );
+}
