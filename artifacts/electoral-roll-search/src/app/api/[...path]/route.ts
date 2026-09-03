@@ -26,10 +26,24 @@ import {
 export const runtime = "nodejs";
 
 type RouteContext = { params: Promise<{ path: string[] }> };
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 function errorResponse(error: unknown) {
-  const message = error instanceof Error ? error.message : "Invalid request";
-  return NextResponse.json({ error: message }, { status: 400 });
+  if (
+    error &&
+    typeof error === "object" &&
+    "name" in error &&
+    error.name === "ZodError"
+  ) {
+    return NextResponse.json(
+      { error: "The request could not be validated" },
+      { status: 400 },
+    );
+  }
+  return NextResponse.json(
+    { error: "The server could not complete the request" },
+    { status: 500 },
+  );
 }
 
 async function routePath(context: RouteContext) {
@@ -103,7 +117,20 @@ export async function POST(request: Request, context: RouteContext) {
       segments[1] === "pdfs"
     ) {
       const params = UploadPdfQueryParams.parse(query);
+      const contentLength = Number(request.headers.get("content-length"));
+      if (Number.isFinite(contentLength) && contentLength > MAX_UPLOAD_BYTES) {
+        return NextResponse.json(
+          { error: "The uploaded file is too large" },
+          { status: 413 },
+        );
+      }
       const buffer = Buffer.from(await request.arrayBuffer());
+      if (buffer.length > MAX_UPLOAD_BYTES) {
+        return NextResponse.json(
+          { error: "The uploaded file is too large" },
+          { status: 413 },
+        );
+      }
       if (buffer.length < 5 || buffer.subarray(0, 5).toString() !== "%PDF-") {
         return NextResponse.json(
           { error: "The uploaded file is not a valid PDF" },

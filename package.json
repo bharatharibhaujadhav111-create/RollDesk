@@ -3,8 +3,7 @@
   "version": "0.0.0",
   "license": "MIT",
   "scripts": {
-    "preinstall": "node scripts/preinstall.cjs",
-    "dev": "node scripts/dev.cjs",
+    "dev": "pnpm --filter @workspace/electoral-roll-search dev",
     "build": "pnpm --filter @workspace/electoral-roll-search build",
     "typecheck": "pnpm --filter @workspace/electoral-roll-search typecheck"
   },

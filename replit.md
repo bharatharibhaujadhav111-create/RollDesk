@@ -7,7 +7,6 @@ Fast public search over locally managed electoral-roll PDFs, with an administrat
 - `pnpm --filter @workspace/electoral-roll-search run dev` — run the Next.js web app and API routes
 - `pnpm run typecheck` — typecheck the Next.js app
 - `pnpm run build` — build the Next.js app for deployment
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - PDFs are stored in `./pdfs`; the persistent searchable metadata index is `./pdf-index.json` and its health state is `./pdf-index-state.json`
 - No database or authentication is used by design. The admin route is intentionally unauthenticated per product requirements.
 
@@ -16,7 +15,7 @@ Fast public search over locally managed electoral-roll PDFs, with an administrat
 - pnpm workspaces, Node.js 24, TypeScript 5.9
 - API: Next.js route handlers
 - Validation: generated Zod schemas
-- API codegen: Orval (from OpenAPI spec)
+- API: Next.js route handlers under `src/app/api`
 - Build: Next.js
 - Frontend: React + Next.js + TanStack Query
 
@@ -25,7 +24,7 @@ Fast public search over locally managed electoral-roll PDFs, with an administrat
 - `artifacts/electoral-roll-search/src/pages/search.tsx` — public search experience
 - `artifacts/electoral-roll-search/src/pages/admin.tsx` — PDF management and index health
 - `artifacts/electoral-roll-search/src/server/electoral-roll.ts` — filesystem storage, query parser, fuzzy ranking, and index lifecycle
-- `lib/api-spec/openapi.yaml` — API source of truth
+- `artifacts/electoral-roll-search/src/app/api/[...path]/route.ts` — API route handlers
 
 ## Architecture decisions
 
