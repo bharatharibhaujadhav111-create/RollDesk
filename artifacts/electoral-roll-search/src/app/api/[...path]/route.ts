@@ -16,6 +16,7 @@ import {
   addPdf,
   ensureStorage,
   getIndexState,
+  getAdminStats,
   getSuggestions,
   listPdfs,
   pdfDirectory,
@@ -96,7 +97,7 @@ export async function GET(request: Request, context: RouteContext) {
     ) {
       await ensureStorage();
       const pdfs = await listPdfs();
-      const state = getIndexState();
+      const state = await getAdminStats();
       return NextResponse.json({
         ...state,
         totalPdfs: pdfs.length,

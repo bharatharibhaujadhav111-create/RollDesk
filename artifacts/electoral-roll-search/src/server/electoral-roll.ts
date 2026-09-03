@@ -1153,6 +1153,59 @@ export function getIndexState() {
   return state;
 }
 
+export async function getAdminStats() {
+  const database = getSupabaseAdmin();
+  if (!database) return state;
+  const [assetsResult, votersResult, jobsResult] = await Promise.all([
+    database.from("pdf_assets").select("status, updated_at, indexed_records"),
+    database
+      .from("voters")
+      .select("id, epic_number, relative_name, house_number, age, gender", {
+        count: "exact",
+        head: false,
+      }),
+    database.from("index_jobs").select("status"),
+  ]);
+  if (assetsResult.error)
+    throw new Error(`Could not load PDF stats: ${assetsResult.error.message}`);
+  if (votersResult.error)
+    throw new Error(
+      `Could not load voter stats: ${votersResult.error.message}`,
+    );
+  if (jobsResult.error)
+    throw new Error(`Could not load job stats: ${jobsResult.error.message}`);
+  const assets = assetsResult.data ?? [];
+  const voters = votersResult.data ?? [];
+  const jobs = jobsResult.data ?? [];
+  const active = assets.some((asset) =>
+    ["queued", "extracting", "ocr", "indexing"].includes(asset.status),
+  );
+  const failedPdfs = assets.filter((asset) => asset.status === "failed").length;
+  return {
+    ...state,
+    totalPdfs: assets.length,
+    totalRecords: votersResult.count ?? voters.length,
+    status: active ? "indexing" : failedPdfs ? "error" : "ready",
+    lastIndexedAt:
+      assets
+        .filter((asset) => asset.status === "ready")
+        .map((asset) => asset.updated_at)
+        .sort()
+        .at(-1) ?? null,
+    indexedPdfs: assets.filter((asset) => asset.status === "ready").length,
+    failedPdfs,
+    recordsWithEpic: voters.filter((voter) => Boolean(voter.epic_number))
+      .length,
+    recordsWithRelativeName: voters.filter((voter) =>
+      Boolean(voter.relative_name),
+    ).length,
+    recordsWithDetails: voters.filter((voter) =>
+      Boolean(voter.house_number || voter.age !== null || voter.gender),
+    ).length,
+    progress: active ? 50 : 100,
+  } satisfies IndexState;
+}
+
 export function getRecords() {
   return records;
 }
