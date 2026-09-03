@@ -281,6 +281,7 @@ export default function AdminPage() {
   const [uploadVillageOpen, setUploadVillageOpen] = useState(false);
   const [villages, setVillages] = useState<Village[]>(VILLAGES);
   const [villagesLoading, setVillagesLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -357,15 +358,19 @@ export default function AdminPage() {
       return true;
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : "Unknown upload error";
+        error instanceof Error
+          ? error.message
+          : typeof error === "string"
+            ? error
+            : "The upload was interrupted. Please try again.";
       setUploadError(`Upload failed: ${message}`);
       return false;
     }
   }
 
-  async function uploadFiles(files: FileList | null) {
-    if (!files?.length) return;
-    const selected = Array.from(files);
+  async function uploadFiles(files: File[]) {
+    if (files.length === 0) return;
+    const selected = files;
     const invalid = selected.find(
       (file) =>
         file.type !== "application/pdf" &&
@@ -375,11 +380,16 @@ export default function AdminPage() {
       setUploadError(`${invalid.name} is not a PDF file.`);
       return;
     }
-    for (const file of selected) {
-      const uploaded = await uploadFile(file);
-      if (!uploaded) break;
+    setUploading(true);
+    try {
+      for (const file of selected) {
+        const uploaded = await uploadFile(file);
+        if (!uploaded) break;
+      }
+    } finally {
+      setUploading(false);
+      if (inputRef.current) inputRef.current.value = "";
     }
-    if (inputRef.current) inputRef.current.value = "";
   }
 
   function rebuild() {
@@ -617,11 +627,15 @@ export default function AdminPage() {
               type="button"
               data-testid="button-upload-pdf"
               onClick={() => setUploadVillageOpen(true)}
-              disabled={villagesLoading}
+              disabled={villagesLoading || uploading}
               className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground transition-transform hover:-translate-y-0.5 disabled:opacity-50"
             >
               <Upload size={14} />{" "}
-              {villagesLoading ? "Loading villages" : "Upload PDF"}
+              {villagesLoading
+                ? "Loading villages"
+                : uploading
+                  ? "Uploading"
+                  : "Upload PDF"}
             </button>
             <input
               ref={inputRef}
@@ -631,8 +645,16 @@ export default function AdminPage() {
               accept="application/pdf,.pdf"
               className="hidden"
               onChange={(event) => {
-                uploadFiles(event.target.files);
+                const selectedFiles = Array.from(
+                  event.currentTarget.files ?? [],
+                );
                 event.currentTarget.value = "";
+                void uploadFiles(selectedFiles).catch(() => {
+                  setUploading(false);
+                  setUploadError(
+                    "Upload failed unexpectedly. Please choose the PDF again.",
+                  );
+                });
               }}
             />
           </div>
