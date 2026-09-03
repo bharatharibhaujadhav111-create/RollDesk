@@ -335,6 +335,7 @@ export default function AdminPage() {
     try {
       const blob = await upload(file.name, file, {
         access: "private",
+        addRandomSuffix: true,
         handleUploadUrl: "/api/admin/blob-upload",
       });
       const response = await fetch("/api/admin/blob-complete", {
