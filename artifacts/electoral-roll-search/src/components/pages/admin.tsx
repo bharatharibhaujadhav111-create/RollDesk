@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
+import { upload } from "@vercel/blob/client";
 import {
   getGetAdminStatsQueryKey,
   getListPdfAssetsQueryKey,
@@ -371,10 +372,28 @@ export default function AdminPage() {
       return false;
     }
     try {
-      await uploadPdf.mutateAsync({
-        data: file,
-        params: { filename: file.name, village },
-      });
+      if (file.size > 4 * 1024 * 1024) {
+        const blob = await upload(file.name, file, {
+          access: "public",
+          handleUploadUrl: "/api/admin/blob-upload",
+        });
+        const response = await fetch("/api/admin/blob-complete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: blob.url, filename: file.name, village }),
+        });
+        if (!response.ok) {
+          const data = (await response.json().catch(() => null)) as {
+            error?: string;
+          } | null;
+          throw new Error(data?.error || `HTTP ${response.status}`);
+        }
+      } else {
+        await uploadPdf.mutateAsync({
+          data: file,
+          params: { filename: file.name, village },
+        });
+      }
       setNotice(`${file.name} uploaded. Indexing has started.`);
       queryClient.invalidateQueries({ queryKey: getListPdfAssetsQueryKey() });
       queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });

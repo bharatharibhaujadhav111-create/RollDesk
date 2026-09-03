@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { handleUpload } from "@vercel/blob/client";
 import { NextResponse } from "next/server";
 import {
   DeletePdfParams,
@@ -119,6 +120,70 @@ export async function POST(request: Request, context: RouteContext) {
   const query = Object.fromEntries(new URL(request.url).searchParams);
 
   try {
+    if (
+      segments.length === 2 &&
+      segments[0] === "admin" &&
+      segments[1] === "blob-upload"
+    ) {
+      const jsonResponse = await handleUpload({
+        body: await request.json(),
+        request,
+        onBeforeGenerateToken: async () => ({
+          allowedContentTypes: ["application/pdf"],
+          maximumSizeInBytes: MAX_UPLOAD_BYTES,
+        }),
+        onUploadCompleted: async () => undefined,
+      });
+      return NextResponse.json(jsonResponse);
+    }
+    if (
+      segments.length === 2 &&
+      segments[0] === "admin" &&
+      segments[1] === "blob-complete"
+    ) {
+      const body = (await request.json()) as {
+        url?: string;
+        filename?: string;
+        village?: string;
+      };
+      const village = VILLAGES.find((item) => item.id === body.village);
+      if (!village || !body.url || !body.filename) {
+        return NextResponse.json(
+          { error: "A valid file and village are required" },
+          { status: 400 },
+        );
+      }
+      const response = await fetch(body.url);
+      if (!response.ok) {
+        return NextResponse.json(
+          { error: "The uploaded file could not be read" },
+          { status: 502 },
+        );
+      }
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (buffer.length > MAX_UPLOAD_BYTES) {
+        return NextResponse.json(
+          { error: "The uploaded file is too large" },
+          { status: 413 },
+        );
+      }
+      if (buffer.length < 5 || buffer.subarray(0, 5).toString() !== "%PDF-") {
+        return NextResponse.json(
+          { error: "The uploaded file is not a valid PDF" },
+          { status: 400 },
+        );
+      }
+      const id = path
+        .basename(body.filename, path.extname(body.filename))
+        .replace(/[^a-z0-9-]/gi, "-")
+        .toLowerCase();
+      return NextResponse.json(
+        await addPdf(id, body.filename, buffer, village.id),
+        {
+          status: 201,
+        },
+      );
+    }
     if (
       segments.length === 2 &&
       segments[0] === "admin" &&
