@@ -15,6 +15,7 @@ import {
 } from "@workspace/api-zod/generated/api";
 import {
   addPdf,
+  downloadPdf,
   ensureStorage,
   getIndexState,
   getAdminStats,
@@ -127,6 +128,13 @@ export async function GET(request: Request, context: RouteContext) {
         return new NextResponse(await fs.promises.readFile(filePath), {
           headers: { "Content-Type": "application/pdf" },
         });
+      }
+      try {
+        return new NextResponse(await downloadPdf(id), {
+          headers: { "Content-Type": "application/pdf" },
+        });
+      } catch {
+        // Continue to the legacy Blob lookup for files created before migration.
       }
       if (process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN) {
         const blob = await get(`pdfs/${id}.pdf`, { access: "private" });

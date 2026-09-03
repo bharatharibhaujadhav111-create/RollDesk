@@ -1,5 +1,9 @@
 create extension if not exists pgcrypto;
 
+insert into storage.buckets (id, name, public)
+values ('electoral-roll-pdfs', 'electoral-roll-pdfs', false)
+on conflict (id) do nothing;
+
 create table if not exists public.pdf_assets (
   id text primary key,
   original_name text not null,

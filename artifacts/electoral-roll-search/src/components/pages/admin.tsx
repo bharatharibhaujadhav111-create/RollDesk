@@ -16,7 +16,6 @@ import {
   X,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { upload } from "@vercel/blob/client";
 import {
   getGetAdminStatsQueryKey,
   getListPdfAssetsQueryKey,
@@ -364,48 +363,27 @@ export default function AdminPage() {
       return false;
     }
     try {
-      const uniqueName = `${Date.now()}-${crypto.randomUUID()}-${file.name}`;
+      const uploadName = `${Date.now()}-${crypto.randomUUID()}-${file.name}`;
       console.log("[PDF Upload] Starting upload:", {
-        uniqueName,
+        uploadName,
         size: file.size,
       });
 
-      let blob;
-      try {
-        blob = await upload(uniqueName, file, {
-          access: "private",
-          handleUploadUrl: "/api/admin/blob-upload",
-        });
-        console.log("[PDF Upload] Blob upload succeeded:", {
-          pathname: blob.pathname,
-        });
-      } catch (uploadErr) {
-        const uploadError =
-          uploadErr instanceof Error ? uploadErr.message : String(uploadErr);
-        console.error("[PDF Upload] Blob upload failed:", uploadError);
-        throw new Error(`Blob upload error: ${uploadError}`);
-      }
-
-      if (!blob?.pathname) {
-        throw new Error("Blob upload did not return a valid pathname");
-      }
-
-      console.log("[PDF Upload] Completing upload via blob-complete endpoint");
-      const response = await fetch("/api/admin/blob-complete", {
+      console.log("[PDF Upload] Uploading directly to Supabase-backed endpoint");
+      const response = await fetch(
+        `/api/admin/pdfs?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`,
+        {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pathname: blob.pathname,
-          filename: file.name,
-          village,
-        }),
-      });
+          headers: { "Content-Type": "application/pdf" },
+          body: file,
+        },
+      );
 
       if (!response.ok) {
         const data = (await response.json().catch(() => null)) as {
           error?: string;
         } | null;
-        console.error("[PDF Upload] blob-complete failed:", {
+        console.error("[PDF Upload] direct upload failed:", {
           status: response.status,
           error: data?.error,
         });

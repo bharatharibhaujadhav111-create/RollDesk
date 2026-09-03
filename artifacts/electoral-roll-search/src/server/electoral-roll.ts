@@ -22,6 +22,7 @@ export const pdfDirectory = process.env.ELECTORAL_ROLL_PDF_DIR
 const indexPath = path.join(storageRoot, "pdf-index.json");
 const statePath = path.join(storageRoot, "pdf-index-state.json");
 const villagePath = path.join(storageRoot, "pdf-villages.json");
+const PDF_BUCKET = "electoral-roll-pdfs";
 const canPersistToBlob = Boolean(
   process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN,
 );
@@ -151,13 +152,14 @@ async function createDatabaseJob(asset: {
   name: string;
   villageId: string;
   sizeBytes: number;
+  storagePath?: string;
 }) {
   const database = getSupabaseAdmin();
   if (!database) return null;
   const { error: assetError } = await database.from("pdf_assets").upsert({
     id: asset.id,
     original_name: asset.name,
-    storage_path: `pdfs/${asset.id}.pdf`,
+    storage_path: asset.storagePath ?? `pdfs/${asset.id}.pdf`,
     village_id: asset.villageId,
     size_bytes: asset.sizeBytes,
     status: "queued",
@@ -1219,6 +1221,28 @@ export function getRecords() {
   return records;
 }
 
+export async function downloadPdf(id: string) {
+  const database = getSupabaseAdmin();
+  if (database) {
+    const { data: asset } = await database
+      .from("pdf_assets")
+      .select("storage_path")
+      .eq("id", id)
+      .maybeSingle();
+    if (asset?.storage_path) {
+      const { data, error } = await database.storage
+        .from(PDF_BUCKET)
+        .download(asset.storage_path);
+      if (!error && data) return Buffer.from(await data.arrayBuffer());
+    }
+  }
+  if (process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN) {
+    const blob = await get(`pdfs/${id}.pdf`, { access: "private" });
+    if (blob) return Buffer.from(await new Response(blob.stream).arrayBuffer());
+  }
+  return fs.readFile(path.join(pdfDirectory, `${id}.pdf`));
+}
+
 export async function listPdfs(query = "") {
   await ensureStorage();
   const database = getSupabaseAdmin();
@@ -1468,7 +1492,18 @@ export async function addPdf(
   try {
     await fs.writeFile(temporaryPath, new Uint8Array(data));
     await fs.rename(temporaryPath, filePath);
-    if (process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN) {
+    if (database) {
+      const { error: storageError } = await database.storage
+        .from(PDF_BUCKET)
+        .upload(`${safeId}.pdf`, data, {
+          contentType: "application/pdf",
+          upsert: false,
+        });
+      if (storageError)
+        throw new Error(
+          `Could not store PDF in Supabase Storage: ${storageError.message}`,
+        );
+    } else if (process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN) {
       await put(`pdfs/${safeId}.pdf`, data, {
         access: "private",
         addRandomSuffix: false,
@@ -1484,6 +1519,7 @@ export async function addPdf(
       name: safeName,
       villageId,
       sizeBytes: data.length,
+      storagePath: database ? `${safeId}.pdf` : undefined,
     });
     return (await listPdfs()).find((pdf) => pdf.id === safeId);
   } catch (error) {
@@ -1492,6 +1528,9 @@ export async function addPdf(
     await fs.rm(labelPath, { force: true }).catch(() => undefined);
     if (process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN) {
       await del(`pdfs/${safeId}.pdf`).catch(() => undefined);
+    }
+    if (database) {
+      await database.storage.from(PDF_BUCKET).remove([`${safeId}.pdf`]);
     }
     if (hadVillageAssignment) villageAssignments[safeId] = previousVillage;
     else delete villageAssignments[safeId];
@@ -1562,15 +1601,25 @@ export async function processQueuedJobs(limit = 1) {
       ) {
         await fs.copyFile(localPath, temporaryPath);
       } else {
-        const blob = await get(asset.storage_path, { access: "private" });
-        if (!blob)
-          throw new Error(
-            "The source PDF is missing from local and Blob storage",
+        const { data: storedPdf, error: storageError } = await database.storage
+          .from(PDF_BUCKET)
+          .download(asset.storage_path);
+        if (!storageError && storedPdf) {
+          await fs.writeFile(
+            temporaryPath,
+            new Uint8Array(await storedPdf.arrayBuffer()),
           );
-        await fs.writeFile(
-          temporaryPath,
-          new Uint8Array(await new Response(blob.stream).arrayBuffer()),
-        );
+        } else {
+          const blob = await get(asset.storage_path, { access: "private" });
+          if (!blob)
+            throw new Error(
+              "The source PDF is missing from local, Supabase Storage, and Blob storage",
+            );
+          await fs.writeFile(
+            temporaryPath,
+            new Uint8Array(await new Response(blob.stream).arrayBuffer()),
+          );
+        }
       }
       await fs.mkdir(pdfDirectory, { recursive: true });
       await fs.copyFile(
