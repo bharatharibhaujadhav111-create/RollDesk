@@ -149,83 +149,13 @@ export async function POST(request: Request, context: RouteContext) {
       segments[1] === "upload" &&
       segments[2] === "signed-url"
     ) {
-      const database = getSupabaseAdmin();
-      if (!database)
-        return NextResponse.json(
-          { error: "Supabase is not configured" },
-          { status: 503 },
-        );
-      const body = (await request.json()) as {
-        filename?: string;
-        size?: number;
-      };
-      const size = Number(body.size);
-      if (
-        !body.filename ||
-        !body.filename.toLowerCase().endsWith(".pdf") ||
-        !Number.isSafeInteger(size) ||
-        size <= 0 ||
-        size > MAX_UPLOAD_BYTES
-      ) {
-        return NextResponse.json(
-          { error: "A valid PDF filename and size are required" },
-          { status: 400 },
-        );
-      }
-      const { data: bucket } = await database.storage
-        .getBucket("electoral-roll-pdfs")
-        .catch(() => ({ data: null }));
-      if (!bucket) {
-        const { error: bucketError } = await database.storage.createBucket(
-          "electoral-roll-pdfs",
-          { public: false, fileSizeLimit: `${MAX_UPLOAD_BYTES}` },
-        );
-        if (bucketError && !/already exists/i.test(bucketError.message)) {
-          console.error(
-            "[Upload] Could not initialize Supabase bucket",
-            bucketError,
-          );
-          return NextResponse.json(
-            { error: `Storage bucket is unavailable: ${bucketError.message}` },
-            { status: 503 },
-          );
-        }
-      }
-      const storagePath = `uploads/${randomUUID()}.pdf`;
-      let data: { token: string } | null = null;
-      let error: Error | null = null;
-      try {
-        const result = await database.storage
-          .from("electoral-roll-pdfs")
-          .createSignedUploadUrl(storagePath, { upsert: false });
-        data = result.data;
-        error = result.error;
-      } catch (caught) {
-        error = caught instanceof Error ? caught : new Error(String(caught));
-      }
-      if (error || !data)
-        return NextResponse.json(
-          {
-            error: `Could not create upload URL: ${error?.message ?? "unknown error"}`,
-          },
-          { status: 502 },
-        );
-      const projectUrl = process.env.SUPABASE_URL;
-      const endpoint =
-        process.env.SUPABASE_STORAGE_UPLOAD_URL ||
-        (projectUrl
-          ? `${projectUrl.replace(/\.supabase\.co\/?$/, ".storage.supabase.co")}/storage/v1/upload/resumable`
-          : "");
-      if (!endpoint)
-        return NextResponse.json(
-          { error: "Supabase storage endpoint is not configured" },
-          { status: 503 },
-        );
-      return NextResponse.json({
-        endpoint,
-        path: storagePath,
-        token: data.token,
-      });
+      return NextResponse.json(
+        {
+          error:
+            "Large PDF uploads are disabled in this build. Send the file directly to /api/admin/pdfs instead.",
+        },
+        { status: 501 },
+      );
     }
     if (
       segments.length === 3 &&
@@ -233,62 +163,13 @@ export async function POST(request: Request, context: RouteContext) {
       segments[1] === "upload" &&
       segments[2] === "complete"
     ) {
-      const database = getSupabaseAdmin();
-      if (!database)
-        return NextResponse.json(
-          { error: "Supabase is not configured" },
-          { status: 503 },
-        );
-      const body = (await request.json()) as {
-        path?: string;
-        filename?: string;
-        village?: string;
-        size?: number;
-      };
-      const village = VILLAGES.find((item) => item.id === body.village);
-      const size = Number(body.size);
-      if (
-        !village ||
-        !body.path?.startsWith("uploads/") ||
-        !body.filename ||
-        !Number.isSafeInteger(size) ||
-        size <= 0 ||
-        size > MAX_UPLOAD_BYTES
-      ) {
-        return NextResponse.json(
-          { error: "Invalid completed upload" },
-          { status: 400 },
-        );
-      }
-      const { data: storedPdf, error: storageError } = await database.storage
-        .from("electoral-roll-pdfs")
-        .download(body.path);
-      if (storageError || !storedPdf)
-        return NextResponse.json(
-          { error: "Uploaded PDF was not found in storage" },
-          { status: 404 },
-        );
-      const buffer = Buffer.from(await storedPdf.arrayBuffer());
-      if (
-        buffer.length !== size ||
-        buffer.subarray(0, 5).toString() !== "%PDF-"
-      ) {
-        await database.storage.from("electoral-roll-pdfs").remove([body.path]);
-        return NextResponse.json(
-          { error: "Uploaded object failed PDF validation" },
-          { status: 400 },
-        );
-      }
-      const id = `roll-${createHash("sha256").update(body.path).digest("hex").slice(0, 24)}`;
-      const asset = await addPdf(
-        id,
-        body.filename,
-        buffer,
-        village.id,
-        body.path,
+      return NextResponse.json(
+        {
+          error:
+            "Large PDF completion handling is disabled in this build. Upload directly to /api/admin/pdfs instead.",
+        },
+        { status: 501 },
       );
-      scheduleIndexing();
-      return NextResponse.json(asset, { status: 201 });
     }
     if (
       segments.length === 2 &&
