@@ -3,7 +3,6 @@ import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { del, get, put } from "@vercel/blob";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { getSupabaseAdmin } from "@/server/supabase";
 
@@ -23,11 +22,6 @@ const indexPath = path.join(storageRoot, "pdf-index.json");
 const statePath = path.join(storageRoot, "pdf-index-state.json");
 const villagePath = path.join(storageRoot, "pdf-villages.json");
 const PDF_BUCKET = "electoral-roll-pdfs";
-const canPersistToBlob = Boolean(
-  process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN,
-);
-const metadataBlobPath = (filePath: string) =>
-  `electoral-roll-index/${path.basename(filePath)}`;
 const INDEX_FORMAT_VERSION = 6;
 export const VILLAGES = [
   { id: "akolekati", name: "Akolekati", nameMr: "अकोलेकाटी" },
@@ -982,14 +976,6 @@ async function writeJson(filePath: string, value: unknown) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(temporaryPath, new Uint8Array(Buffer.from(content)));
   await fs.rename(temporaryPath, filePath);
-  if (canPersistToBlob) {
-    await put(metadataBlobPath(filePath), content, {
-      access: "private",
-      addRandomSuffix: false,
-      allowOverwrite: true,
-      contentType: "application/json",
-    });
-  }
 }
 
 function canonicalFieldLabel(label: string) {
@@ -1057,17 +1043,7 @@ async function getOcrLanguages() {
 }
 
 async function readJson<T>(filePath: string): Promise<T> {
-  try {
-    return JSON.parse(await fs.readFile(filePath, "utf8")) as T;
-  } catch (localError) {
-    if (!canPersistToBlob) throw localError;
-    const blob = await get(metadataBlobPath(filePath), { access: "private" });
-    if (!blob) throw localError;
-    const content = await new Response(blob.stream).text();
-    await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.writeFile(filePath, content);
-    return JSON.parse(content) as T;
-  }
+  return JSON.parse(await fs.readFile(filePath, "utf8")) as T;
 }
 
 async function getPageCount(filePath: string) {
@@ -1147,9 +1123,8 @@ export async function ensureStorage() {
     indexWasMissing ||
     state.indexVersion < INDEX_FORMAT_VERSION ||
     state.status === "indexing" ||
-    (!canPersistToBlob &&
-      (fileIds.size !== indexedIds.size ||
-        [...fileIds].some((id) => !indexedIds.has(id))));
+    fileIds.size !== indexedIds.size ||
+    [...fileIds].some((id) => !indexedIds.has(id));
   if (indexIsStale) {
     if (state.indexVersion < INDEX_FORMAT_VERSION) {
       records = [];
@@ -1236,10 +1211,6 @@ export async function downloadPdf(id: string) {
       if (!error && data) return Buffer.from(await data.arrayBuffer());
     }
   }
-  if (process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN) {
-    const blob = await get(`pdfs/${id}.pdf`, { access: "private" });
-    if (blob) return Buffer.from(await new Response(blob.stream).arrayBuffer());
-  }
   return fs.readFile(path.join(pdfDirectory, `${id}.pdf`));
 }
 
@@ -1282,14 +1253,7 @@ export async function listPdfs(query = "") {
   const localFiles = await fs.readdir(pdfDirectory);
   // A fresh Vercel function has an empty /tmp directory. Indexed records retain
   // enough metadata to keep previously uploaded PDFs visible in the admin UI.
-  const files = canPersistToBlob
-    ? Array.from(
-        new Set([
-          ...localFiles,
-          ...records.map((record) => `${record.pdfId}.pdf`),
-        ]),
-      )
-    : localFiles;
+  const files = localFiles;
   const indexedByPdf = new Map<string, number>();
   for (const record of records)
     indexedByPdf.set(record.pdfId, (indexedByPdf.get(record.pdfId) ?? 0) + 1);
@@ -1503,13 +1467,6 @@ export async function addPdf(
         throw new Error(
           `Could not store PDF in Supabase Storage: ${storageError.message}`,
         );
-    } else if (process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN) {
-      await put(`pdfs/${safeId}.pdf`, data, {
-        access: "private",
-        addRandomSuffix: false,
-        allowOverwrite: false,
-        contentType: "application/pdf",
-      });
     }
     await fs.writeFile(labelPath, safeName);
     villageAssignments[safeId] = villageId;
@@ -1526,9 +1483,6 @@ export async function addPdf(
     await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
     await fs.rm(filePath, { force: true }).catch(() => undefined);
     await fs.rm(labelPath, { force: true }).catch(() => undefined);
-    if (process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN) {
-      await del(`pdfs/${safeId}.pdf`).catch(() => undefined);
-    }
     if (database) {
       await database.storage.from(PDF_BUCKET).remove([`${safeId}.pdf`]);
     }
@@ -1610,15 +1564,7 @@ export async function processQueuedJobs(limit = 1) {
             new Uint8Array(await storedPdf.arrayBuffer()),
           );
         } else {
-          const blob = await get(asset.storage_path, { access: "private" });
-          if (!blob)
-            throw new Error(
-              "The source PDF is missing from local, Supabase Storage, and Blob storage",
-            );
-          await fs.writeFile(
-            temporaryPath,
-            new Uint8Array(await new Response(blob.stream).arrayBuffer()),
-          );
+          throw new Error("The source PDF is missing from local and Supabase Storage");
         }
       }
       await fs.mkdir(pdfDirectory, { recursive: true });
@@ -1686,9 +1632,6 @@ export async function renamePdf(id: string, name: string) {
 export async function removePdf(id: string) {
   await ensureStorage();
   const database = getSupabaseAdmin();
-  if (process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN) {
-    await del(`pdfs/${id}.pdf`);
-  }
   if (database) {
     const { error } = await database.from("pdf_assets").delete().eq("id", id);
     if (error) throw new Error(`Could not delete PDF asset: ${error.message}`);

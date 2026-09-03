@@ -7,7 +7,6 @@
     "worker": "tsx src/index.ts"
   },
   "dependencies": {
-    "@vercel/blob": "^2.8.0",
     "@supabase/supabase-js": "2.57.4",
     "pdfjs-dist": "5.4.624"
   },
