@@ -1,34 +1,19 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": [
-    "next-env.d.ts",
-    "src/**/*",
-    ".next/types/**/*.ts"
-  ],
-  "exclude": [
-    "node_modules",
-    "build",
-    "dist",
-    "**/*.test.ts"
-  ],
+  "include": ["next-env.d.ts", "src/**/*", ".next/types/**/*.ts"],
+  "exclude": ["node_modules", "build", "dist", "**/*.test.ts"],
   "compilerOptions": {
     "noEmit": true,
     "jsx": "preserve",
-    "lib": [
-      "esnext",
-      "dom",
-      "dom.iterable"
-    ],
+    "lib": ["esnext", "dom", "dom.iterable"],
     "resolveJsonModule": true,
     "allowImportingTsExtensions": true,
     "moduleResolution": "bundler",
-    "types": [
-      "node"
-    ],
+    "types": ["node"],
     "paths": {
-      "@/*": [
-        "./src/*"
-      ]
+      "@/*": ["./src/*"],
+      "@workspace/api-server/*": ["../api-server/src/*"],
+      "@workspace/api-zod/*": ["../../lib/api-zod/src/*"]
     },
     "allowJs": true,
     "strict": false,
