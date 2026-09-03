@@ -30,6 +30,11 @@ import {
 import { StatusPill } from "@/components/status-pill";
 
 type Village = { id: string; name: string; nameMr: string };
+type AdminPdfAsset = PdfAsset & {
+  villageId?: string;
+  villageName?: string;
+  villageNameMr?: string;
+};
 
 function formatCount(value: number | null | undefined) {
   return (value ?? 0).toLocaleString();
@@ -278,6 +283,7 @@ export default function AdminPage() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [filter, setFilter] = useState("");
   const [village, setVillage] = useState("tirhe");
+  const [viewVillage, setViewVillage] = useState("all");
   const [uploadVillageOpen, setUploadVillageOpen] = useState(false);
   const [villages, setVillages] = useState<Village[]>(VILLAGES);
   const [villagesLoading, setVillagesLoading] = useState(false);
@@ -317,7 +323,31 @@ export default function AdminPage() {
   });
   const rebuildIndex = useRebuildSearchIndex();
   const stats = statsQuery.data;
-  const assets = assetsQuery.data || [];
+  const assets = (assetsQuery.data || []) as AdminPdfAsset[];
+  const visibleAssets =
+    viewVillage === "all"
+      ? assets
+      : assets.filter((asset) => asset.villageId === viewVillage);
+  const villageGroups = villages
+    .map((item) => ({
+      ...item,
+      assets: visibleAssets.filter((asset) => asset.villageId === item.id),
+    }))
+    .filter((group) => group.assets.length > 0);
+  const uncategorizedAssets = visibleAssets.filter(
+    (asset) => !villages.some((item) => item.id === asset.villageId),
+  );
+  const displayVillageGroups = uncategorizedAssets.length
+    ? [
+        ...villageGroups,
+        {
+          id: "uncategorized",
+          name: "Uncategorized",
+          nameMr: "",
+          assets: uncategorizedAssets,
+        },
+      ]
+    : villageGroups;
   const noPdfAssets =
     assetsQuery.isError &&
     (assetsQuery.error as { status?: number } | null)?.status === 404;
@@ -741,6 +771,31 @@ export default function AdminPage() {
             </button>
           </div>
         )}
+        <div className="mb-3 flex flex-col gap-3 rounded-xl border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="font-mono-app text-[10px] font-bold uppercase tracking-[.14em] text-accent">
+              Browse by village
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              View and manage PDFs from one village at a time.
+            </p>
+          </div>
+          <select
+            data-testid="select-view-village"
+            value={viewVillage}
+            onChange={(event) => setViewVillage(event.target.value)}
+            className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-bold text-primary outline-none focus:border-accent sm:max-w-xs"
+            aria-label="View PDFs by village"
+          >
+            <option value="all">All villages ({assets.length})</option>
+            {villages.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name} / {item.nameMr} (
+                {assets.filter((asset) => asset.villageId === item.id).length})
+              </option>
+            ))}
+          </select>
+        </div>
         <div className="mb-3 flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3">
           <SearchIcon />
           <input
@@ -751,17 +806,23 @@ export default function AdminPage() {
             className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/65"
           />
           <span className="font-mono-app text-[10px] uppercase tracking-[.1em] text-muted-foreground">
-            {assets.length} files
+            {visibleAssets.length} files
           </span>
         </div>
-        <div className="overflow-hidden rounded-xl border border-border bg-card shadow-[var(--shadow-sm)]">
-          <div className="hidden grid-cols-[minmax(0,1.5fr)_110px_90px_160px_124px] gap-4 border-b border-border bg-secondary/45 px-5 py-3 font-mono-app text-[9px] uppercase tracking-[.12em] text-muted-foreground lg:grid">
-            <span>Document</span>
-            <span>Pages</span>
-            <span>Records</span>
-            <span>Status</span>
-            <span className="text-right">Actions</span>
+        {visibleAssets.length > 0 && !assetsQuery.isLoading && !assetsQuery.isError ? (
+          <div className="mb-4 flex gap-2 overflow-x-auto pb-1">
+            {displayVillageGroups.map((group) => (
+              <a
+                key={group.id}
+                href={`#village-${group.id}`}
+                className="shrink-0 rounded-full border border-border bg-card px-3 py-2 text-xs font-bold text-primary transition-colors hover:border-accent hover:bg-accent/5"
+              >
+                {group.name} / {group.nameMr} ({group.assets.length})
+              </a>
+            ))}
           </div>
+        ) : null}
+        <div className="space-y-4">
           {assetsQuery.isLoading ? (
             <div className="space-y-3 p-5" data-testid="loading-pdf-assets">
               {[1, 2, 3].map((item) => (
@@ -786,7 +847,7 @@ export default function AdminPage() {
                 Retry
               </button>
             </div>
-          ) : assets.length === 0 ? (
+          ) : visibleAssets.length === 0 ? (
             <div className="p-10 text-center" data-testid="empty-pdf-assets">
               <FileArchive
                 className="mx-auto text-muted-foreground"
@@ -802,8 +863,36 @@ export default function AdminPage() {
               </p>
             </div>
           ) : (
-            assets.map((asset) => (
-              <AssetRow key={asset.id} asset={asset} onChanged={() => {}} />
+            displayVillageGroups.map((group) => (
+              <section
+                key={group.id}
+                id={`village-${group.id}`}
+                className="overflow-hidden rounded-xl border border-border bg-card shadow-[var(--shadow-sm)]"
+              >
+                <div className="flex items-center justify-between gap-4 border-b border-border bg-secondary/45 px-5 py-4">
+                  <div>
+                    <h3 className="text-base font-bold text-primary">
+                      {group.name}
+                    </h3>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      {group.nameMr} · village PDF collection
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-primary px-3 py-1 font-mono-app text-[10px] font-bold uppercase tracking-[.08em] text-primary-foreground">
+                    {group.assets.length} PDFs
+                  </span>
+                </div>
+                <div className="hidden grid-cols-[minmax(0,1.5fr)_110px_90px_160px_124px] gap-4 border-b border-border/70 bg-secondary/20 px-5 py-3 font-mono-app text-[9px] uppercase tracking-[.12em] text-muted-foreground lg:grid">
+                  <span>Document</span>
+                  <span>Pages</span>
+                  <span>Records</span>
+                  <span>Status</span>
+                  <span className="text-right">Actions</span>
+                </div>
+                {group.assets.map((asset) => (
+                  <AssetRow key={asset.id} asset={asset} onChanged={() => {}} />
+                ))}
+              </section>
             ))
           )}
         </div>

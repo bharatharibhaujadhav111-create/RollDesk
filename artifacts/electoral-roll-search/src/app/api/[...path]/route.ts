@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { get } from "@vercel/blob";
 import { handleUpload } from "@vercel/blob/client";
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import {
   DeletePdfParams,
   GetSearchSuggestionsQueryParams,
@@ -20,6 +20,7 @@ import {
   getSuggestions,
   listPdfs,
   pdfDirectory,
+  processQueuedJobs,
   queueAllIndexJobs,
   removePdf,
   renamePdf,
@@ -31,6 +32,16 @@ export const runtime = "nodejs";
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+
+function scheduleIndexing() {
+  after(async () => {
+    try {
+      await processQueuedJobs(1);
+    } catch (error) {
+      console.error("Background electoral roll indexing failed", error);
+    }
+  });
+}
 
 function errorResponse(error: unknown) {
   if (
@@ -98,6 +109,7 @@ export async function GET(request: Request, context: RouteContext) {
       await ensureStorage();
       const pdfs = await listPdfs();
       const state = await getAdminStats();
+      scheduleIndexing();
       return NextResponse.json({
         ...state,
         totalPdfs: pdfs.length,
@@ -203,12 +215,9 @@ export async function POST(request: Request, context: RouteContext) {
         .basename(body.filename, path.extname(body.filename))
         .replace(/[^a-z0-9-]/gi, "-")
         .toLowerCase();
-      return NextResponse.json(
-        await addPdf(id, body.filename, buffer, village.id),
-        {
-          status: 201,
-        },
-      );
+      const asset = await addPdf(id, body.filename, buffer, village.id);
+      scheduleIndexing();
+      return NextResponse.json(asset, { status: 201 });
     }
     if (
       segments.length === 2 &&
@@ -247,12 +256,9 @@ export async function POST(request: Request, context: RouteContext) {
         .basename(params.filename, path.extname(params.filename))
         .replace(/[^a-z0-9-]/gi, "-")
         .toLowerCase();
-      return NextResponse.json(
-        await addPdf(id, params.filename, buffer, village.id),
-        {
-          status: 201,
-        },
-      );
+      const asset = await addPdf(id, params.filename, buffer, village.id);
+      scheduleIndexing();
+      return NextResponse.json(asset, { status: 201 });
     }
     if (
       segments.length === 3 &&
@@ -261,6 +267,7 @@ export async function POST(request: Request, context: RouteContext) {
       segments[2] === "rebuild"
     ) {
       await queueAllIndexJobs();
+      scheduleIndexing();
       return NextResponse.json(
         { ...getIndexState(), status: "queued" },
         { status: 202 },
