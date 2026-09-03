@@ -369,14 +369,58 @@ export default function AdminPage() {
         size: file.size,
       });
 
-      const response = await fetch(
-        `/api/admin/pdfs?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`,
-        {
+      let response: Response;
+      if (file.size <= 4 * 1024 * 1024) {
+        response = await fetch(
+          `/api/admin/pdfs?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/pdf" },
+            body: file,
+          },
+        );
+      } else {
+        const signResponse = await fetch("/api/admin/upload/signed-url", {
           method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename: uploadName, size: file.size }),
+        });
+        if (!signResponse.ok) {
+          const data = (await signResponse.json().catch(() => null)) as {
+            error?: string;
+          } | null;
+          throw new Error(
+            data?.error || `Large upload setup failed (${signResponse.status})`,
+          );
+        }
+        const signed = (await signResponse.json()) as {
+          path: string;
+          signedUrl: string;
+        };
+
+        const uploadResponse = await fetch(signed.signedUrl, {
+          method: "PUT",
           headers: { "Content-Type": "application/pdf" },
           body: file,
-        },
-      );
+        });
+        if (!uploadResponse.ok) {
+          const text = await uploadResponse.text().catch(() => "");
+          throw new Error(
+            text || `Large upload failed (${uploadResponse.status})`,
+          );
+        }
+
+        response = await fetch("/api/admin/upload/complete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            path: signed.path,
+            filename: file.name,
+            village,
+            size: file.size,
+          }),
+        });
+      }
 
       if (!response.ok) {
         const data = (await response.json().catch(() => null)) as {

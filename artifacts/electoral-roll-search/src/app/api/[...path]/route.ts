@@ -143,6 +143,116 @@ export async function POST(request: Request, context: RouteContext) {
 
   try {
     if (
+      segments.length === 3 &&
+      segments[0] === "admin" &&
+      segments[1] === "upload" &&
+      segments[2] === "signed-url"
+    ) {
+      const database = getSupabaseAdmin();
+      if (!database) {
+        return NextResponse.json(
+          { error: "Supabase is not configured" },
+          { status: 503 },
+        );
+      }
+      const body = (await request.json().catch(() => ({}))) as {
+        filename?: string;
+        size?: number;
+      };
+      const size = Number(body.size);
+      if (
+        !body.filename ||
+        !body.filename.toLowerCase().endsWith(".pdf") ||
+        !Number.isSafeInteger(size) ||
+        size <= 0
+      ) {
+        return NextResponse.json(
+          { error: "A valid PDF filename and size are required" },
+          { status: 400 },
+        );
+      }
+      const storagePath = `uploads/${randomUUID()}.pdf`;
+      const { data, error } = await database.storage
+        .from("electoral-roll-pdfs")
+        .createSignedUploadUrl(storagePath, { upsert: false });
+      if (error || !data) {
+        return NextResponse.json(
+          {
+            error: `Could not create signed upload URL: ${error?.message ?? "unknown error"}`,
+          },
+          { status: 502 },
+        );
+      }
+      return NextResponse.json({
+        path: storagePath,
+        signedUrl: data.signedUrl,
+      });
+    }
+    if (
+      segments.length === 3 &&
+      segments[0] === "admin" &&
+      segments[1] === "upload" &&
+      segments[2] === "complete"
+    ) {
+      const database = getSupabaseAdmin();
+      if (!database) {
+        return NextResponse.json(
+          { error: "Supabase is not configured" },
+          { status: 503 },
+        );
+      }
+      const body = (await request.json()) as {
+        path?: string;
+        filename?: string;
+        village?: string;
+        size?: number;
+      };
+      const village = VILLAGES.find((item) => item.id === body.village);
+      const size = Number(body.size);
+      if (
+        !village ||
+        !body.path?.startsWith("uploads/") ||
+        !body.filename ||
+        !Number.isSafeInteger(size) ||
+        size <= 0
+      ) {
+        return NextResponse.json(
+          { error: "Invalid completed upload" },
+          { status: 400 },
+        );
+      }
+      const { data: storedPdf, error: storageError } = await database.storage
+        .from("electoral-roll-pdfs")
+        .download(body.path);
+      if (storageError || !storedPdf) {
+        return NextResponse.json(
+          { error: "Uploaded PDF was not found in storage" },
+          { status: 404 },
+        );
+      }
+      const buffer = Buffer.from(await storedPdf.arrayBuffer());
+      if (
+        buffer.length !== size ||
+        buffer.subarray(0, 5).toString() !== "%PDF-"
+      ) {
+        await database.storage.from("electoral-roll-pdfs").remove([body.path]);
+        return NextResponse.json(
+          { error: "Uploaded object failed PDF validation" },
+          { status: 400 },
+        );
+      }
+      const id = `roll-${randomUUID()}`;
+      const asset = await addPdf(
+        id,
+        body.filename,
+        buffer,
+        village.id,
+        body.path,
+      );
+      scheduleIndexing();
+      return NextResponse.json(asset, { status: 201 });
+    }
+    if (
       segments.length === 2 &&
       segments[0] === "admin" &&
       segments[1] === "pdfs"
