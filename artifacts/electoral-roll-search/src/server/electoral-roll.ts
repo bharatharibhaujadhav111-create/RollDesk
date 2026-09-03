@@ -3,13 +3,16 @@ import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
+import { put } from "@vercel/blob";
 
 const execFileAsync = promisify(execFile);
 const serviceRoot = path.resolve(process.cwd());
 const projectRoot = path.resolve(serviceRoot, "../..");
 export const pdfDirectory = process.env.ELECTORAL_ROLL_PDF_DIR
   ? path.resolve(process.env.ELECTORAL_ROLL_PDF_DIR)
-  : path.join(projectRoot, "pdfs");
+  : process.env.VERCEL
+    ? path.join(tmpdir(), "electoral-roll-pdfs")
+    : path.join(projectRoot, "pdfs");
 const indexPath = path.join(projectRoot, "pdf-index.json");
 const statePath = path.join(projectRoot, "pdf-index-state.json");
 const villagePath = path.join(projectRoot, "pdf-villages.json");
@@ -933,6 +936,14 @@ export async function addPdf(
   await fs.writeFile(temporaryPath, data);
   await fs.rm(filePath, { force: true });
   await fs.rename(temporaryPath, filePath);
+  if (process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN) {
+    await put(`pdfs/${safeId}.pdf`, data, {
+      access: "private",
+      addRandomSuffix: false,
+      allowOverwrite: true,
+      contentType: "application/pdf",
+    });
+  }
   await fs.writeFile(path.join(pdfDirectory, `${safeId}.label`), safeName);
   villageAssignments[safeId] = villageId;
   await writeJson(villagePath, villageAssignments);
