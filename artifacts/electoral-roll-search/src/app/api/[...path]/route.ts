@@ -107,11 +107,20 @@ export async function GET(request: Request, context: RouteContext) {
       await ensureStorage();
       const id = path.basename(segments[1]);
       const filePath = path.join(pdfDirectory, `${id}.pdf`);
-      if (!fs.existsSync(filePath))
-        return NextResponse.json({ error: "PDF not found" }, { status: 404 });
-      return new NextResponse(await fs.promises.readFile(filePath), {
-        headers: { "Content-Type": "application/pdf" },
-      });
+      if (fs.existsSync(filePath)) {
+        return new NextResponse(await fs.promises.readFile(filePath), {
+          headers: { "Content-Type": "application/pdf" },
+        });
+      }
+      if (process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN) {
+        const blob = await get(`pdfs/${id}.pdf`, { access: "private" });
+        if (blob) {
+          return new NextResponse(await new Response(blob.stream).arrayBuffer(), {
+            headers: { "Content-Type": "application/pdf" },
+          });
+        }
+      }
+      return NextResponse.json({ error: "PDF not found" }, { status: 404 });
     }
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   } catch (error) {

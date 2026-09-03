@@ -3,19 +3,27 @@ import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { put } from "@vercel/blob";
+import { get, put } from "@vercel/blob";
 
 const execFileAsync = promisify(execFile);
 const serviceRoot = path.resolve(process.cwd());
 const projectRoot = path.resolve(serviceRoot, "../..");
+const storageRoot = process.env.VERCEL
+  ? path.join(tmpdir(), "electoral-roll-data")
+  : projectRoot;
 export const pdfDirectory = process.env.ELECTORAL_ROLL_PDF_DIR
   ? path.resolve(process.env.ELECTORAL_ROLL_PDF_DIR)
   : process.env.VERCEL
     ? path.join(tmpdir(), "electoral-roll-pdfs")
     : path.join(projectRoot, "pdfs");
-const indexPath = path.join(projectRoot, "pdf-index.json");
-const statePath = path.join(projectRoot, "pdf-index-state.json");
-const villagePath = path.join(projectRoot, "pdf-villages.json");
+const indexPath = path.join(storageRoot, "pdf-index.json");
+const statePath = path.join(storageRoot, "pdf-index-state.json");
+const villagePath = path.join(storageRoot, "pdf-villages.json");
+const canPersistToBlob = Boolean(
+  process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN,
+);
+const metadataBlobPath = (filePath: string) =>
+  `electoral-roll-index/${path.basename(filePath)}`;
 const INDEX_FORMAT_VERSION = 5;
 export const VILLAGES = [
   { id: "akolekati", name: "Akolekati", nameMr: "अकोलेकाटी" },
@@ -739,8 +747,32 @@ async function extractPdfPages(
 
 async function writeJson(filePath: string, value: unknown) {
   const temporaryPath = `${filePath}.tmp`;
-  await fs.writeFile(temporaryPath, JSON.stringify(value, null, 2));
+  const content = JSON.stringify(value, null, 2);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(temporaryPath, content);
   await fs.rename(temporaryPath, filePath);
+  if (canPersistToBlob) {
+    await put(metadataBlobPath(filePath), content, {
+      access: "private",
+      addRandomSuffix: false,
+      allowOverwrite: true,
+      contentType: "application/json",
+    });
+  }
+}
+
+async function readJson<T>(filePath: string): Promise<T> {
+  try {
+    return JSON.parse(await fs.readFile(filePath, "utf8")) as T;
+  } catch (localError) {
+    if (!canPersistToBlob) throw localError;
+    const blob = await get(metadataBlobPath(filePath), { access: "private" });
+    if (!blob) throw localError;
+    const content = await new Response(blob.stream).text();
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, content);
+    return JSON.parse(content) as T;
+  }
 }
 
 async function getPageCount(filePath: string) {
@@ -751,25 +783,18 @@ async function getPageCount(filePath: string) {
 export async function ensureStorage() {
   if (initialized) return;
   await fs.mkdir(pdfDirectory, { recursive: true });
+  await fs.mkdir(storageRoot, { recursive: true });
   let indexWasMissing = false;
   try {
-    const saved = JSON.parse(
-      await fs.readFile(indexPath, "utf8"),
-    ) as RollRecord[];
+    const saved = await readJson<RollRecord[]>(indexPath);
     if (Array.isArray(saved)) records = saved;
-    villageAssignments = JSON.parse(
-      await fs.readFile(villagePath, "utf8"),
-    ) as Record<string, string>;
-    const savedState = JSON.parse(
-      await fs.readFile(statePath, "utf8"),
-    ) as Partial<IndexState>;
+    villageAssignments = await readJson<Record<string, string>>(villagePath);
+    const savedState = await readJson<Partial<IndexState>>(statePath);
     if (savedState) state = { ...state, ...savedState };
   } catch {
     indexWasMissing = true;
     try {
-      villageAssignments = JSON.parse(
-        await fs.readFile(villagePath, "utf8"),
-      ) as Record<string, string>;
+      villageAssignments = await readJson<Record<string, string>>(villagePath);
     } catch {
       villageAssignments = {};
     }
@@ -792,8 +817,9 @@ export async function ensureStorage() {
     indexWasMissing ||
     state.indexVersion < INDEX_FORMAT_VERSION ||
     state.status === "indexing" ||
-    fileIds.size !== indexedIds.size ||
-    [...fileIds].some((id) => !indexedIds.has(id));
+    (!canPersistToBlob &&
+      (fileIds.size !== indexedIds.size ||
+        [...fileIds].some((id) => !indexedIds.has(id))));
   if (indexIsStale) {
     if (state.indexVersion < INDEX_FORMAT_VERSION) {
       records = [];
@@ -814,7 +840,17 @@ export function getRecords() {
 
 export async function listPdfs(query = "") {
   await ensureStorage();
-  const files = await fs.readdir(pdfDirectory);
+  const localFiles = await fs.readdir(pdfDirectory);
+  // A fresh Vercel function has an empty /tmp directory. Indexed records retain
+  // enough metadata to keep previously uploaded PDFs visible in the admin UI.
+  const files = canPersistToBlob
+    ? Array.from(
+        new Set([
+          ...localFiles,
+          ...records.map((record) => `${record.pdfId}.pdf`),
+        ]),
+      )
+    : localFiles;
   const indexedByPdf = new Map<string, number>();
   for (const record of records)
     indexedByPdf.set(record.pdfId, (indexedByPdf.get(record.pdfId) ?? 0) + 1);
@@ -823,7 +859,7 @@ export async function listPdfs(query = "") {
     files
       .filter((file) => file.toLowerCase().endsWith(".pdf"))
       .map(async (file) => {
-        const stats = await fs.stat(path.join(pdfDirectory, file));
+        const stats = await fs.stat(path.join(pdfDirectory, file)).catch(() => null);
         const id = path.basename(file, ".pdf");
         let pageCount = 1;
         try {
@@ -840,7 +876,8 @@ export async function listPdfs(query = "") {
               await fs.readFile(path.join(pdfDirectory, `${id}.label`), "utf8")
             ).trim() || file;
         } catch {
-          // The PDF filename is the display name when no rename label exists.
+          displayName =
+            records.find((record) => record.pdfId === id)?.pdfName ?? file;
         }
         return {
           id,
@@ -852,9 +889,12 @@ export async function listPdfs(query = "") {
           villageNameMr:
             VILLAGES.find((village) => village.id === villageForPdf(id))
               ?.nameMr ?? "",
-          sizeBytes: stats.size,
+          sizeBytes: stats?.size ?? 0,
           pageCount: Math.max(1, pageCount),
-          uploadedAt: stats.birthtime.toISOString(),
+          uploadedAt:
+            stats?.birthtime.toISOString() ??
+            state.lastIndexedAt ??
+            new Date(0).toISOString(),
           status: state.status === "indexing" ? "indexing" : "indexed",
           indexedRecords: indexedByPdf.get(id) ?? 0,
           fileUrl: `/api/files/${encodeURIComponent(id)}`,
