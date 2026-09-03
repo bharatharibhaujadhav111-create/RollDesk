@@ -25,7 +25,6 @@ import {
   useListPdfAssets,
   useRenamePdf,
   useRebuildSearchIndex,
-  useUploadPdf,
   type PdfAsset,
 } from "@workspace/api-client-react";
 import { StatusPill } from "@/components/status-pill";
@@ -280,65 +279,27 @@ export default function AdminPage() {
   const [filter, setFilter] = useState("");
   const [village, setVillage] = useState("tirhe");
   const [uploadVillageOpen, setUploadVillageOpen] = useState(false);
-  const [villages, setVillages] = useState<Village[]>([]);
-  const [villagesLoading, setVillagesLoading] = useState(true);
+  const [villages, setVillages] = useState<Village[]>(VILLAGES);
+  const [villagesLoading, setVillagesLoading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
     fetch("/api/villages")
-      .then((res) => res.json())
+      .then(async (res) => {
+        if (!res.ok)
+          throw new Error(`Village list request failed (${res.status})`);
+        const data = await res.json();
+        if (!Array.isArray(data) || data.length === 0) {
+          throw new Error("Village list is empty");
+        }
+        return data as Village[];
+      })
       .then((data) => {
         setVillages(data);
         setVillagesLoading(false);
       })
       .catch(() => {
-        setVillages([
-          { id: "akolekati", name: "Akolekati", nameMr: "अकोलेकाटी" },
-          { id: "banegaon", name: "Banegaon", nameMr: "बाणेगाव" },
-          { id: "belati", name: "Belati", nameMr: "बेलाटी" },
-          { id: "bhagaiwadi", name: "Bhagaiwadi", nameMr: "भगाईवाडी" },
-          { id: "bhatewadi", name: "Bhatewadi", nameMr: "भाटेवाडी" },
-          { id: "bhogaon", name: "Bhogaon", nameMr: "भोगाव" },
-          { id: "darfal-bibi", name: "Darfal (Bibi)", nameMr: "दरफळ बिबी" },
-          {
-            id: "darphal-gawadi",
-            name: "Darphal (Gawadi)",
-            nameMr: "दरफळ गावडी",
-          },
-          { id: "dongaon", name: "Dongaon", nameMr: "डोंगाव" },
-          { id: "ekrukh", name: "Ekrukh", nameMr: "एकरुख" },
-          { id: "gulwanchi", name: "Gulwanchi", nameMr: "गुळवंची" },
-          { id: "haglur", name: "Haglur", nameMr: "हागळूर" },
-          { id: "hipparge", name: "Hipparge", nameMr: "हिप्परगे" },
-          { id: "hiraj", name: "Hiraj", nameMr: "हिरज" },
-          { id: "honsal", name: "Honsal", nameMr: "होंसळ" },
-          { id: "kalman", name: "Kalman", nameMr: "कळमण" },
-          { id: "karamba", name: "Karamba", nameMr: "करंबा" },
-          { id: "kavathe", name: "Kavathe", nameMr: "कवठे" },
-          { id: "khed", name: "Khed", nameMr: "खेड" },
-          { id: "kondi", name: "Kondi", nameMr: "कोंडी" },
-          { id: "kouthali", name: "Kouthali", nameMr: "कौठाळी" },
-          { id: "mardi", name: "Mardi", nameMr: "मार्डी" },
-          { id: "mohitewadi", name: "Mohitewadi", nameMr: "मोहितेवाडी" },
-          { id: "nandur", name: "Nandur", nameMr: "नांदूर" },
-          { id: "nannaj", name: "Nannaj", nameMr: "नान्नज" },
-          { id: "narotewadi", name: "Narotewadi", nameMr: "नरोटेवाडी" },
-          { id: "padsali", name: "Padsali", nameMr: "पडसाळी" },
-          { id: "pakani", name: "Pakani", nameMr: "पाकणी" },
-          { id: "pathari", name: "Pathari", nameMr: "पाथरी" },
-          { id: "raleras", name: "Raleras", nameMr: "राळेरस" },
-          { id: "ranmasle", name: "Ranmasle", nameMr: "रणमसळे" },
-          { id: "sakharewadi", name: "Sakharewadi", nameMr: "साखरेवाडी" },
-          { id: "samshapur", name: "Samshapur", nameMr: "शमशापूर" },
-          { id: "sevalalnagar", name: "Sevalalnagar", nameMr: "सेवालालनगर" },
-          { id: "shivani", name: "Shivani", nameMr: "शिवणी" },
-          { id: "taratgaon", name: "Taratgaon", nameMr: "तरटगाव" },
-          { id: "telgaon", name: "Telgaon", nameMr: "तेलगाव" },
-          { id: "tirhe", name: "Tirhe", nameMr: "तिर्हे" },
-          { id: "wadala", name: "Wadala", nameMr: "वडाळा" },
-          { id: "wangi", name: "Wangi", nameMr: "Wangi" },
-        ]);
         setVillagesLoading(false);
       });
   }, []);
@@ -352,7 +313,6 @@ export default function AdminPage() {
       queryKey: getListPdfAssetsQueryKey(pdfParams),
     },
   });
-  const uploadPdf = useUploadPdf();
   const rebuildIndex = useRebuildSearchIndex();
   const stats = statsQuery.data;
   const assets = assetsQuery.data || [];
@@ -372,27 +332,20 @@ export default function AdminPage() {
       return false;
     }
     try {
-      if (file.size > 4 * 1024 * 1024) {
-        const blob = await upload(file.name, file, {
-          access: "public",
-          handleUploadUrl: "/api/admin/blob-upload",
-        });
-        const response = await fetch("/api/admin/blob-complete", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: blob.url, filename: file.name, village }),
-        });
-        if (!response.ok) {
-          const data = (await response.json().catch(() => null)) as {
-            error?: string;
-          } | null;
-          throw new Error(data?.error || `HTTP ${response.status}`);
-        }
-      } else {
-        await uploadPdf.mutateAsync({
-          data: file,
-          params: { filename: file.name, village },
-        });
+      const blob = await upload(file.name, file, {
+        access: "public",
+        handleUploadUrl: "/api/admin/blob-upload",
+      });
+      const response = await fetch("/api/admin/blob-complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: blob.url, filename: file.name, village }),
+      });
+      if (!response.ok) {
+        const data = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(data?.error || `HTTP ${response.status}`);
       }
       setNotice(`${file.name} uploaded. Indexing has started.`);
       queryClient.invalidateQueries({ queryKey: getListPdfAssetsQueryKey() });
@@ -660,11 +613,11 @@ export default function AdminPage() {
               type="button"
               data-testid="button-upload-pdf"
               onClick={() => setUploadVillageOpen(true)}
-              disabled={uploadPdf.isPending}
+              disabled={villagesLoading}
               className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground transition-transform hover:-translate-y-0.5 disabled:opacity-50"
             >
               <Upload size={14} />{" "}
-              {uploadPdf.isPending ? "Uploading" : "Upload PDF"}
+              {villagesLoading ? "Loading villages" : "Upload PDF"}
             </button>
             <input
               ref={inputRef}
