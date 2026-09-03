@@ -21,6 +21,7 @@ import {
   removePdf,
   renamePdf,
   searchIndex,
+  VILLAGES,
 } from "@/server/electoral-roll";
 
 export const runtime = "nodejs";
@@ -58,10 +59,18 @@ export async function GET(request: Request, context: RouteContext) {
     if (segments.length === 1 && segments[0] === "healthz") {
       return NextResponse.json({ status: "ok" });
     }
+    if (segments.length === 1 && segments[0] === "villages") {
+      return NextResponse.json(VILLAGES);
+    }
     if (segments.length === 1 && segments[0] === "search") {
       const params = SearchElectoralRollQueryParams.parse(query);
       return NextResponse.json(
-        await searchIndex(params.q, params.page, params.pageSize),
+        await searchIndex(
+          params.q,
+          params.page,
+          params.pageSize,
+          params.village,
+        ),
       );
     }
     if (segments.length === 1 && segments[0] === "suggestions") {
@@ -117,6 +126,13 @@ export async function POST(request: Request, context: RouteContext) {
       segments[1] === "pdfs"
     ) {
       const params = UploadPdfQueryParams.parse(query);
+      const village = VILLAGES.find((item) => item.id === params.village);
+      if (!village) {
+        return NextResponse.json(
+          { error: "A valid village is required" },
+          { status: 400 },
+        );
+      }
       const contentLength = Number(request.headers.get("content-length"));
       if (Number.isFinite(contentLength) && contentLength > MAX_UPLOAD_BYTES) {
         return NextResponse.json(
@@ -141,9 +157,12 @@ export async function POST(request: Request, context: RouteContext) {
         .basename(params.filename, path.extname(params.filename))
         .replace(/[^a-z0-9-]/gi, "-")
         .toLowerCase();
-      return NextResponse.json(await addPdf(id, params.filename, buffer), {
-        status: 201,
-      });
+      return NextResponse.json(
+        await addPdf(id, params.filename, buffer, village.id),
+        {
+          status: 201,
+        },
+      );
     }
     if (
       segments.length === 3 &&

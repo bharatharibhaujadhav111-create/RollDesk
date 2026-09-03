@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Activity,
   AlertCircle,
@@ -29,6 +29,8 @@ import {
 } from "@workspace/api-client-react";
 import { StatusPill } from "@/components/status-pill";
 
+type Village = { id: string; name: string; nameMr: string };
+
 function formatCount(value: number | null | undefined) {
   return (value ?? 0).toLocaleString();
 }
@@ -51,6 +53,49 @@ function StatSkeleton() {
     <div className="h-[116px] animate-pulse rounded-xl border border-border bg-card/75" />
   );
 }
+
+const VILLAGES = [
+  { id: "akolekati", name: "Akolekati", nameMr: "अकोलेकाटी" },
+  { id: "banegaon", name: "Banegaon", nameMr: "बाणेगाव" },
+  { id: "belati", name: "Belati", nameMr: "बेलाटी" },
+  { id: "bhagaiwadi", name: "Bhagaiwadi", nameMr: "भगाईवाडी" },
+  { id: "bhatewadi", name: "Bhatewadi", nameMr: "भाटेवाडी" },
+  { id: "bhogaon", name: "Bhogaon", nameMr: "भोगाव" },
+  { id: "darfal-bibi", name: "Darfal (Bibi)", nameMr: "दरफळ बिबी" },
+  { id: "darphal-gawadi", name: "Darphal (Gawadi)", nameMr: "दरफळ गावडी" },
+  { id: "dongaon", name: "Dongaon", nameMr: "डोंगाव" },
+  { id: "ekrukh", name: "Ekrukh", nameMr: "एकरुख" },
+  { id: "gulwanchi", name: "Gulwanchi", nameMr: "गुळवंची" },
+  { id: "haglur", name: "Haglur", nameMr: "हागळूर" },
+  { id: "hipparge", name: "Hipparge", nameMr: "हिप्परगे" },
+  { id: "hiraj", name: "Hiraj", nameMr: "हिरज" },
+  { id: "honsal", name: "Honsal", nameMr: "होंसळ" },
+  { id: "kalman", name: "Kalman", nameMr: "कळमण" },
+  { id: "karamba", name: "Karamba", nameMr: "करंबा" },
+  { id: "kavathe", name: "Kavathe", nameMr: "कवठे" },
+  { id: "khed", name: "Khed", nameMr: "खेड" },
+  { id: "kondi", name: "Kondi", nameMr: "कोंडी" },
+  { id: "kouthali", name: "Kouthali", nameMr: "कौठाळी" },
+  { id: "mardi", name: "Mardi", nameMr: "मार्डी" },
+  { id: "mohitewadi", name: "Mohitewadi", nameMr: "मोहितेवाडी" },
+  { id: "nandur", name: "Nandur", nameMr: "नांदूर" },
+  { id: "nannaj", name: "Nannaj", nameMr: "नान्नज" },
+  { id: "narotewadi", name: "Narotewadi", nameMr: "नरोटेवाडी" },
+  { id: "padsali", name: "Padsali", nameMr: "पडसाळी" },
+  { id: "pakani", name: "Pakani", nameMr: "पाकणी" },
+  { id: "pathari", name: "Pathari", nameMr: "पाथरी" },
+  { id: "raleras", name: "Raleras", nameMr: "राळेरस" },
+  { id: "ranmasle", name: "Ranmasle", nameMr: "रणमसळे" },
+  { id: "sakharewadi", name: "Sakharewadi", nameMr: "साखरेवाडी" },
+  { id: "samshapur", name: "Samshapur", nameMr: "शमशापूर" },
+  { id: "sevalalnagar", name: "Sevalalnagar", nameMr: "सेवालालनगर" },
+  { id: "shivani", name: "Shivani", nameMr: "शिवणी" },
+  { id: "taratgaon", name: "Taratgaon", nameMr: "तरटगाव" },
+  { id: "telgaon", name: "Telgaon", nameMr: "तेलगाव" },
+  { id: "tirhe", name: "Tirhe", nameMr: "तिर्हे" },
+  { id: "wadala", name: "Wadala", nameMr: "वडाळा" },
+  { id: "wangi", name: "Wangi", nameMr: "Wangi" },
+];
 
 function AssetRow({
   asset,
@@ -232,8 +277,71 @@ export default function AdminPage() {
   const queryClient = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
   const [filter, setFilter] = useState("");
+  const [village, setVillage] = useState("tirhe");
+  const [uploadVillageOpen, setUploadVillageOpen] = useState(false);
+  const [villages, setVillages] = useState<Village[]>([]);
+  const [villagesLoading, setVillagesLoading] = useState(true);
   const [uploadError, setUploadError] = useState("");
   const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    fetch("/api/villages")
+      .then((res) => res.json())
+      .then((data) => {
+        setVillages(data);
+        setVillagesLoading(false);
+      })
+      .catch(() => {
+        setVillages([
+          { id: "akolekati", name: "Akolekati", nameMr: "अकोलेकाटी" },
+          { id: "banegaon", name: "Banegaon", nameMr: "बाणेगाव" },
+          { id: "belati", name: "Belati", nameMr: "बेलाटी" },
+          { id: "bhagaiwadi", name: "Bhagaiwadi", nameMr: "भगाईवाडी" },
+          { id: "bhatewadi", name: "Bhatewadi", nameMr: "भाटेवाडी" },
+          { id: "bhogaon", name: "Bhogaon", nameMr: "भोगाव" },
+          { id: "darfal-bibi", name: "Darfal (Bibi)", nameMr: "दरफळ बिबी" },
+          {
+            id: "darphal-gawadi",
+            name: "Darphal (Gawadi)",
+            nameMr: "दरफळ गावडी",
+          },
+          { id: "dongaon", name: "Dongaon", nameMr: "डोंगाव" },
+          { id: "ekrukh", name: "Ekrukh", nameMr: "एकरुख" },
+          { id: "gulwanchi", name: "Gulwanchi", nameMr: "गुळवंची" },
+          { id: "haglur", name: "Haglur", nameMr: "हागळूर" },
+          { id: "hipparge", name: "Hipparge", nameMr: "हिप्परगे" },
+          { id: "hiraj", name: "Hiraj", nameMr: "हिरज" },
+          { id: "honsal", name: "Honsal", nameMr: "होंसळ" },
+          { id: "kalman", name: "Kalman", nameMr: "कळमण" },
+          { id: "karamba", name: "Karamba", nameMr: "करंबा" },
+          { id: "kavathe", name: "Kavathe", nameMr: "कवठे" },
+          { id: "khed", name: "Khed", nameMr: "खेड" },
+          { id: "kondi", name: "Kondi", nameMr: "कोंडी" },
+          { id: "kouthali", name: "Kouthali", nameMr: "कौठाळी" },
+          { id: "mardi", name: "Mardi", nameMr: "मार्डी" },
+          { id: "mohitewadi", name: "Mohitewadi", nameMr: "मोहितेवाडी" },
+          { id: "nandur", name: "Nandur", nameMr: "नांदूर" },
+          { id: "nannaj", name: "Nannaj", nameMr: "नान्नज" },
+          { id: "narotewadi", name: "Narotewadi", nameMr: "नरोटेवाडी" },
+          { id: "padsali", name: "Padsali", nameMr: "पडसाळी" },
+          { id: "pakani", name: "Pakani", nameMr: "पाकणी" },
+          { id: "pathari", name: "Pathari", nameMr: "पाथरी" },
+          { id: "raleras", name: "Raleras", nameMr: "राळेरस" },
+          { id: "ranmasle", name: "Ranmasle", nameMr: "रणमसळे" },
+          { id: "sakharewadi", name: "Sakharewadi", nameMr: "साखरेवाडी" },
+          { id: "samshapur", name: "Samshapur", nameMr: "शमशापूर" },
+          { id: "sevalalnagar", name: "Sevalalnagar", nameMr: "सेवालालनगर" },
+          { id: "shivani", name: "Shivani", nameMr: "शिवणी" },
+          { id: "taratgaon", name: "Taratgaon", nameMr: "तरटगाव" },
+          { id: "telgaon", name: "Telgaon", nameMr: "तेलगाव" },
+          { id: "tirhe", name: "Tirhe", nameMr: "तिर्हे" },
+          { id: "wadala", name: "Wadala", nameMr: "वडाळा" },
+          { id: "wangi", name: "Wangi", nameMr: "Wangi" },
+        ]);
+        setVillagesLoading(false);
+      });
+  }, []);
+
   const pdfParams = filter ? { q: filter } : undefined;
   const statsQuery = useGetAdminStats({
     query: { queryKey: getGetAdminStatsQueryKey() },
@@ -263,7 +371,7 @@ export default function AdminPage() {
       return;
     }
     uploadPdf.mutate(
-      { data: file, params: { filename: file.name } },
+      { data: file, params: { filename: file.name, village } },
       {
         onSuccess: () => {
           setNotice(`${file.name} uploaded. Indexing has started.`);
@@ -531,7 +639,7 @@ export default function AdminPage() {
             <button
               type="button"
               data-testid="button-upload-pdf"
-              onClick={() => inputRef.current?.click()}
+              onClick={() => setUploadVillageOpen(true)}
               disabled={uploadPdf.isPending}
               className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground transition-transform hover:-translate-y-0.5 disabled:opacity-50"
             >
@@ -552,6 +660,65 @@ export default function AdminPage() {
             />
           </div>
         </div>
+        {uploadVillageOpen ? (
+          <div
+            className="mb-4 rounded-xl border border-accent/30 bg-accent/5 p-5"
+            role="dialog"
+            aria-labelledby="upload-village-title"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3
+                  id="upload-village-title"
+                  className="font-bold text-primary"
+                >
+                  Choose village for these PDFs
+                </h3>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  All files selected next will be assigned to this village.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setUploadVillageOpen(false)}
+                aria-label="Close village selection"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <label
+              className="mt-4 block text-sm font-bold text-primary"
+              htmlFor="admin-village"
+            >
+              गाव / Village
+            </label>
+            <select
+              id="admin-village"
+              data-testid="select-upload-village"
+              value={village}
+              onChange={(event) => setVillage(event.target.value)}
+              disabled={villagesLoading}
+              className="mt-2 w-full rounded-lg border border-border bg-card px-3 py-2 text-sm font-bold sm:max-w-sm disabled:opacity-50"
+            >
+              {villages.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name} / {item.nameMr}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              data-testid="button-confirm-upload-village"
+              onClick={() => {
+                setUploadVillageOpen(false);
+                inputRef.current?.click();
+              }}
+              className="mt-4 inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-xs font-bold text-primary-foreground"
+            >
+              <Upload size={14} /> Choose PDFs
+            </button>
+          </div>
+        ) : null}
         {(uploadError || notice) && (
           <div
             className={`mb-4 flex items-center justify-between rounded-lg border px-4 py-3 text-sm ${uploadError ? "border-destructive/25 bg-destructive/5 text-destructive" : "border-emerald-700/20 bg-emerald-700/5 text-emerald-800"}`}

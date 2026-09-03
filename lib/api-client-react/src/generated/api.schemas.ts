@@ -51,9 +51,9 @@ export interface SearchResponse {
   filters: SearchResponseFilters;
   indexStatus: string;
   /**
-     * @minimum 0
-     * @maximum 100
-     */
+   * @minimum 0
+   * @maximum 100
+   */
   indexProgress: number;
 }
 
@@ -87,9 +87,9 @@ export interface IndexStats {
   lastIndexedAt: string | null;
   indexVersion: number;
   /**
-     * @minimum 0
-     * @maximum 100
-     */
+   * @minimum 0
+   * @maximum 100
+   */
   progress: number;
   indexedPdfs: number;
   failedPdfs: number;
@@ -101,33 +101,34 @@ export interface IndexStats {
 }
 
 export type SearchElectoralRollParams = {
-/**
- * @minLength 1
- */
-q: string;
-/**
- * @minimum 1
- */
-page?: number;
-/**
- * @minimum 1
- * @maximum 50
- */
-pageSize?: number;
+  /**
+   * @minLength 1
+   */
+  q: string;
+  village: string;
+  /**
+   * @minimum 1
+   */
+  page?: number;
+  /**
+   * @minimum 1
+   * @maximum 50
+   */
+  pageSize?: number;
 };
 
 export type GetSearchSuggestionsParams = {
-/**
- * @minLength 2
- */
-q: string;
+  /**
+   * @minLength 2
+   */
+  q: string;
 };
 
 export type ListPdfAssetsParams = {
-q?: string;
+  q?: string;
 };
 
 export type UploadPdfParams = {
-filename: string;
+  filename: string;
+  village: string;
 };
-

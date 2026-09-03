@@ -5,17 +5,15 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import * as zod from 'zod';
-
+import * as zod from "zod";
 
 /**
  * Returns server health status
  * @summary Health check
  */
 export const HealthCheckResponse = zod.object({
-  "status": zod.string()
-})
-
+  status: zod.string(),
+});
 
 /**
  * @summary Search indexed electoral roll records
@@ -26,145 +24,148 @@ export const searchElectoralRollQueryPageDefault = 1;
 export const searchElectoralRollQueryPageSizeDefault = 10;
 export const searchElectoralRollQueryPageSizeMax = 50;
 
-
-
 export const SearchElectoralRollQueryParams = zod.object({
-  "q": zod.coerce.string().min(1),
-  "page": zod.coerce.number().int().min(1).default(searchElectoralRollQueryPageDefault),
-  "pageSize": zod.coerce.number().int().min(1).max(searchElectoralRollQueryPageSizeMax).default(searchElectoralRollQueryPageSizeDefault)
-})
+  q: zod.coerce.string().min(1),
+  village: zod.coerce.string().min(1).default("tirhe"),
+  page: zod.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(searchElectoralRollQueryPageDefault),
+  pageSize: zod.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(searchElectoralRollQueryPageSizeMax)
+    .default(searchElectoralRollQueryPageSizeDefault),
+});
 
 export const searchElectoralRollResponseIndexProgressMin = 0;
 export const searchElectoralRollResponseIndexProgressMax = 100;
 
-
-
 export const SearchElectoralRollResponse = zod.object({
-  "results": zod.array(zod.object({
-  "id": zod.string(),
-  "voterName": zod.string(),
-  "relativeName": zod.string(),
-  "relativeLabel": zod.string().optional(),
-  "epicNumber": zod.string().nullish(),
-  "serialNumber": zod.string().nullable(),
-  "houseNumber": zod.string().nullable(),
-  "age": zod.number().nullable(),
-  "gender": zod.string().nullable(),
-  "partNumber": zod.string(),
-  "pageNumber": zod.number(),
-  "pdfName": zod.string(),
-  "pdfId": zod.string(),
-  "confidence": zod.number(),
-  "score": zod.number(),
-  "matchedBy": zod.array(zod.string()).optional()
-})),
-  "total": zod.number(),
-  "page": zod.number(),
-  "pageSize": zod.number(),
-  "query": zod.string(),
-  "filters": zod.object({
-  "name": zod.string().nullable(),
-  "relativeName": zod.string().nullable(),
-  "epicNumber": zod.string().nullable()
-}),
-  "indexStatus": zod.string(),
-  "indexProgress": zod.number().min(searchElectoralRollResponseIndexProgressMin).max(searchElectoralRollResponseIndexProgressMax)
-})
-
+  results: zod.array(
+    zod.object({
+      id: zod.string(),
+      voterName: zod.string(),
+      relativeName: zod.string(),
+      relativeLabel: zod.string().optional(),
+      epicNumber: zod.string().nullish(),
+      serialNumber: zod.string().nullable(),
+      houseNumber: zod.string().nullable(),
+      age: zod.number().nullable(),
+      gender: zod.string().nullable(),
+      partNumber: zod.string(),
+      pageNumber: zod.number(),
+      pdfName: zod.string(),
+      pdfId: zod.string(),
+      confidence: zod.number(),
+      score: zod.number(),
+      matchedBy: zod.array(zod.string()).optional(),
+    }),
+  ),
+  total: zod.number(),
+  page: zod.number(),
+  pageSize: zod.number(),
+  query: zod.string(),
+  filters: zod.object({
+    name: zod.string().nullable(),
+    relativeName: zod.string().nullable(),
+    epicNumber: zod.string().nullable(),
+  }),
+  indexStatus: zod.string(),
+  indexProgress: zod
+    .number()
+    .min(searchElectoralRollResponseIndexProgressMin)
+    .max(searchElectoralRollResponseIndexProgressMax),
+});
 
 /**
  * @summary Get search suggestions from indexed names and EPIC numbers
  */
 export const getSearchSuggestionsQueryQMin = 2;
 
-
-
 export const GetSearchSuggestionsQueryParams = zod.object({
-  "q": zod.coerce.string().min(getSearchSuggestionsQueryQMin)
-})
+  q: zod.coerce.string().min(getSearchSuggestionsQueryQMin),
+});
 
 export const GetSearchSuggestionsResponseItem = zod.object({
-  "label": zod.string(),
-  "value": zod.string(),
-  "kind": zod.string()
-})
-export const GetSearchSuggestionsResponse = zod.array(GetSearchSuggestionsResponseItem)
-
+  label: zod.string(),
+  value: zod.string(),
+  kind: zod.string(),
+});
+export const GetSearchSuggestionsResponse = zod.array(
+  GetSearchSuggestionsResponseItem,
+);
 
 /**
  * @summary List managed electoral roll PDFs
  */
 export const ListPdfAssetsQueryParams = zod.object({
-  "q": zod.coerce.string().optional()
-})
+  q: zod.coerce.string().optional(),
+});
 
 export const ListPdfAssetsResponseItem = zod.object({
-  "id": zod.string(),
-  "name": zod.string(),
-  "sizeBytes": zod.number(),
-  "pageCount": zod.number(),
-  "uploadedAt": zod.coerce.date(),
-  "status": zod.string(),
-  "indexedRecords": zod.number(),
-  "fileUrl": zod.string().optional()
-})
-export const ListPdfAssetsResponse = zod.array(ListPdfAssetsResponseItem)
-
+  id: zod.string(),
+  name: zod.string(),
+  sizeBytes: zod.number(),
+  pageCount: zod.number(),
+  uploadedAt: zod.coerce.date(),
+  status: zod.string(),
+  indexedRecords: zod.number(),
+  fileUrl: zod.string().optional(),
+});
+export const ListPdfAssetsResponse = zod.array(ListPdfAssetsResponseItem);
 
 /**
  * @summary Upload one PDF and start indexing
  */
 export const UploadPdfQueryParams = zod.object({
-  "filename": zod.coerce.string()
-})
+  filename: zod.coerce.string(),
+  village: zod.coerce.string().min(1),
+});
 
 export const UploadPdfResponse = zod.object({
-  "id": zod.string(),
-  "name": zod.string(),
-  "sizeBytes": zod.number(),
-  "pageCount": zod.number(),
-  "uploadedAt": zod.coerce.date(),
-  "status": zod.string(),
-  "indexedRecords": zod.number(),
-  "fileUrl": zod.string().optional()
-})
-
+  id: zod.string(),
+  name: zod.string(),
+  sizeBytes: zod.number(),
+  pageCount: zod.number(),
+  uploadedAt: zod.coerce.date(),
+  status: zod.string(),
+  indexedRecords: zod.number(),
+  fileUrl: zod.string().optional(),
+});
 
 /**
  * @summary Rename a managed PDF
  */
 export const RenamePdfParams = zod.object({
-  "id": zod.coerce.string()
-})
-
-
-
+  id: zod.coerce.string(),
+});
 
 export const RenamePdfBody = zod.object({
-  "name": zod.string().min(1)
-})
+  name: zod.string().min(1),
+});
 
 export const RenamePdfResponse = zod.object({
-  "id": zod.string(),
-  "name": zod.string(),
-  "sizeBytes": zod.number(),
-  "pageCount": zod.number(),
-  "uploadedAt": zod.coerce.date(),
-  "status": zod.string(),
-  "indexedRecords": zod.number(),
-  "fileUrl": zod.string().optional()
-})
-
+  id: zod.string(),
+  name: zod.string(),
+  sizeBytes: zod.number(),
+  pageCount: zod.number(),
+  uploadedAt: zod.coerce.date(),
+  status: zod.string(),
+  indexedRecords: zod.number(),
+  fileUrl: zod.string().optional(),
+});
 
 /**
  * @summary Delete a managed PDF and its index entries
  */
 export const DeletePdfParams = zod.object({
-  "id": zod.coerce.string()
-})
+  id: zod.coerce.string(),
+});
 
-export const DeletePdfResponse = zod.void()
-
+export const DeletePdfResponse = zod.void();
 
 /**
  * @summary Get PDF and index health
@@ -172,24 +173,24 @@ export const DeletePdfResponse = zod.void()
 export const getAdminStatsResponseProgressMin = 0;
 export const getAdminStatsResponseProgressMax = 100;
 
-
-
 export const GetAdminStatsResponse = zod.object({
-  "totalPdfs": zod.number(),
-  "totalRecords": zod.number(),
-  "status": zod.string(),
-  "lastIndexedAt": zod.coerce.date().nullable(),
-  "indexVersion": zod.number(),
-  "progress": zod.number().min(getAdminStatsResponseProgressMin).max(getAdminStatsResponseProgressMax),
-  "indexedPdfs": zod.number(),
-  "failedPdfs": zod.number(),
-  "ocrPages": zod.number(),
-  "recordsWithEpic": zod.number(),
-  "recordsWithRelativeName": zod.number(),
-  "recordsWithDetails": zod.number(),
-  "warnings": zod.array(zod.string())
-})
-
+  totalPdfs: zod.number(),
+  totalRecords: zod.number(),
+  status: zod.string(),
+  lastIndexedAt: zod.coerce.date().nullable(),
+  indexVersion: zod.number(),
+  progress: zod
+    .number()
+    .min(getAdminStatsResponseProgressMin)
+    .max(getAdminStatsResponseProgressMax),
+  indexedPdfs: zod.number(),
+  failedPdfs: zod.number(),
+  ocrPages: zod.number(),
+  recordsWithEpic: zod.number(),
+  recordsWithRelativeName: zod.number(),
+  recordsWithDetails: zod.number(),
+  warnings: zod.array(zod.string()),
+});
 
 /**
  * @summary Rebuild the local search index in the background
@@ -197,22 +198,21 @@ export const GetAdminStatsResponse = zod.object({
 export const rebuildSearchIndexResponseProgressMin = 0;
 export const rebuildSearchIndexResponseProgressMax = 100;
 
-
-
 export const RebuildSearchIndexResponse = zod.object({
-  "totalPdfs": zod.number(),
-  "totalRecords": zod.number(),
-  "status": zod.string(),
-  "lastIndexedAt": zod.coerce.date().nullable(),
-  "indexVersion": zod.number(),
-  "progress": zod.number().min(rebuildSearchIndexResponseProgressMin).max(rebuildSearchIndexResponseProgressMax),
-  "indexedPdfs": zod.number(),
-  "failedPdfs": zod.number(),
-  "ocrPages": zod.number(),
-  "recordsWithEpic": zod.number(),
-  "recordsWithRelativeName": zod.number(),
-  "recordsWithDetails": zod.number(),
-  "warnings": zod.array(zod.string())
-})
-
-
+  totalPdfs: zod.number(),
+  totalRecords: zod.number(),
+  status: zod.string(),
+  lastIndexedAt: zod.coerce.date().nullable(),
+  indexVersion: zod.number(),
+  progress: zod
+    .number()
+    .min(rebuildSearchIndexResponseProgressMin)
+    .max(rebuildSearchIndexResponseProgressMax),
+  indexedPdfs: zod.number(),
+  failedPdfs: zod.number(),
+  ocrPages: zod.number(),
+  recordsWithEpic: zod.number(),
+  recordsWithRelativeName: zod.number(),
+  recordsWithDetails: zod.number(),
+  warnings: zod.array(zod.string()),
+});

@@ -1,15 +1,15 @@
 {
-  "totalPdfs": 3,
-  "totalRecords": 2911,
+  "totalPdfs": 0,
+  "totalRecords": 0,
   "status": "ready",
-  "lastIndexedAt": "2026-09-03T06:35:36.841Z",
+  "lastIndexedAt": "2026-09-03T14:45:15.001Z",
   "indexVersion": 4,
   "progress": 100,
-  "indexedPdfs": 3,
+  "indexedPdfs": 0,
   "failedPdfs": 0,
-  "ocrPages": 117,
-  "recordsWithEpic": 2883,
-  "recordsWithRelativeName": 2833,
-  "recordsWithDetails": 2826,
+  "ocrPages": 0,
+  "recordsWithEpic": 0,
+  "recordsWithRelativeName": 0,
+  "recordsWithDetails": 0,
   "warnings": []
 }

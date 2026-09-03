@@ -33,6 +33,8 @@ import {
 
 const PAGE_SIZE = 10;
 
+type Village = { id: string; name: string; nameMr: string };
+
 function formatCount(value: number | null | undefined) {
   return (value ?? 0).toLocaleString();
 }
@@ -186,7 +188,9 @@ function ResultCard({ result }: { result: SearchResult }) {
 export default function SearchPage() {
   const [query, setQuery] = useState("");
   const [submitted, setSubmitted] = useState("");
+  const [village, setVillage] = useState("tirhe");
   const [page, setPage] = useState(1);
+  const [villages, setVillages] = useState<Village[]>([]);
   const [recentSearches, setRecentSearches] = useState<string[]>(() => {
     try {
       return JSON.parse(
@@ -196,10 +200,64 @@ export default function SearchPage() {
       return [];
     }
   });
+
+  useEffect(() => {
+    fetch("/api/villages")
+      .then((res) => res.json())
+      .then((data) => setVillages(data))
+      .catch(() =>
+        setVillages([
+          { id: "akolekati", name: "Akolekati", nameMr: "अकोलेकाटी" },
+          { id: "banegaon", name: "Banegaon", nameMr: "बाणेगाव" },
+          { id: "belati", name: "Belati", nameMr: "बेलाटी" },
+          { id: "bhagaiwadi", name: "Bhagaiwadi", nameMr: "भगाईवाडी" },
+          { id: "bhatewadi", name: "Bhatewadi", nameMr: "भाटेवाडी" },
+          { id: "bhogaon", name: "Bhogaon", nameMr: "भोगाव" },
+          { id: "darfal-bibi", name: "Darfal (Bibi)", nameMr: "दरफळ बिबी" },
+          {
+            id: "darphal-gawadi",
+            name: "Darphal (Gawadi)",
+            nameMr: "दरफळ गावडी",
+          },
+          { id: "dongaon", name: "Dongaon", nameMr: "डोंगाव" },
+          { id: "ekrukh", name: "Ekrukh", nameMr: "एकरुख" },
+          { id: "gulwanchi", name: "Gulwanchi", nameMr: "गुळवंची" },
+          { id: "haglur", name: "Haglur", nameMr: "हागळूर" },
+          { id: "hipparge", name: "Hipparge", nameMr: "हिप्परगे" },
+          { id: "hiraj", name: "Hiraj", nameMr: "हिरज" },
+          { id: "honsal", name: "Honsal", nameMr: "होंसळ" },
+          { id: "kalman", name: "Kalman", nameMr: "कळमण" },
+          { id: "karamba", name: "Karamba", nameMr: "करंबा" },
+          { id: "kavathe", name: "Kavathe", nameMr: "कवठे" },
+          { id: "khed", name: "Khed", nameMr: "खेड" },
+          { id: "kondi", name: "Kondi", nameMr: "कोंडी" },
+          { id: "kouthali", name: "Kouthali", nameMr: "कौठाळी" },
+          { id: "mardi", name: "Mardi", nameMr: "मार्डी" },
+          { id: "mohitewadi", name: "Mohitewadi", nameMr: "मोहितेवाडी" },
+          { id: "nandur", name: "Nandur", nameMr: "नांदूर" },
+          { id: "nannaj", name: "Nannaj", nameMr: "नान्नज" },
+          { id: "narotewadi", name: "Narotewadi", nameMr: "नरोटेवाडी" },
+          { id: "padsali", name: "Padsali", nameMr: "पडसाळी" },
+          { id: "pakani", name: "Pakani", nameMr: "पाकणी" },
+          { id: "pathari", name: "Pathari", nameMr: "पाथरी" },
+          { id: "raleras", name: "Raleras", nameMr: "राळेरस" },
+          { id: "ranmasle", name: "Ranmasle", nameMr: "रणमसळे" },
+          { id: "sakharewadi", name: "Sakharewadi", nameMr: "साखरेवाडी" },
+          { id: "samshapur", name: "Samshapur", nameMr: "शमशापूर" },
+          { id: "sevalalnagar", name: "Sevalalnagar", nameMr: "सेवालालनगर" },
+          { id: "shivani", name: "Shivani", nameMr: "शिवणी" },
+          { id: "taratgaon", name: "Taratgaon", nameMr: "तरटगाव" },
+          { id: "telgaon", name: "Telgaon", nameMr: "तेलगाव" },
+          { id: "tirhe", name: "Tirhe", nameMr: "तिर्हे" },
+          { id: "wadala", name: "Wadala", nameMr: "वडाळा" },
+          { id: "wangi", name: "Wangi", nameMr: "वांगी" },
+        ]),
+      );
+  }, []);
   const trimmed = query.trim();
   const searchParams = useMemo(
-    () => ({ q: submitted || "__idle__", page, pageSize: PAGE_SIZE }),
-    [submitted, page],
+    () => ({ q: submitted || "__idle__", village, page, pageSize: PAGE_SIZE }),
+    [submitted, village, page],
   );
   const suggestionParams = useMemo(() => ({ q: trimmed }), [trimmed]);
   const searchQuery = useSearchElectoralRoll(searchParams, {
@@ -222,8 +280,27 @@ export default function SearchPage() {
     : 1;
 
   useEffect(() => {
+    const savedVillage = window.localStorage.getItem("roll-desk-village");
+    if (
+      villages.length > 0 &&
+      villages.some((item) => item.id === savedVillage)
+    ) {
+      setVillage(savedVillage as string);
+    } else if (villages.length > 0) {
+      setVillage(villages[0].id);
+    }
+  }, [villages]);
+
+  useEffect(() => {
     if (submitted) window.scrollTo({ top: 0, behavior: "smooth" });
   }, [page, submitted]);
+
+  function changeVillage(nextVillage: string) {
+    setVillage(nextVillage);
+    setSubmitted("");
+    setPage(1);
+    window.localStorage.setItem("roll-desk-village", nextVillage);
+  }
 
   function submitSearch(event: FormEvent) {
     event.preventDefault();
@@ -333,6 +410,25 @@ export default function SearchPage() {
                 मतदाराचे नाव किंवा वडिलांचे / पतीचे नाव टाका आणि यादीत शोधा
               </p>
             </div>
+            <label
+              className="mt-5 block text-sm font-bold text-primary"
+              htmlFor="search-village"
+            >
+              गाव / Village
+            </label>
+            <select
+              id="search-village"
+              data-testid="select-search-village"
+              value={village}
+              onChange={(event) => changeVillage(event.target.value)}
+              className="mt-2 w-full rounded-xl border border-border bg-background px-4 py-3 text-sm font-bold"
+            >
+              {villages.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name} / {item.nameMr}
+                </option>
+              ))}
+            </select>
             <div className="mt-5 flex flex-col items-stretch gap-3 sm:flex-row sm:items-center">
               <div className="flex min-w-0 flex-1 items-center gap-3 rounded-xl border-2 border-primary bg-background px-4 py-2 focus-within:border-accent">
                 <Search className="shrink-0 text-accent" size={22} />
