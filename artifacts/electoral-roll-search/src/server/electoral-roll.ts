@@ -1240,20 +1240,6 @@ export function getRecords() {
 }
 
 export async function downloadPdf(id: string) {
-  const database = getSupabaseAdmin();
-  if (database) {
-    const { data: asset } = await database
-      .from("pdf_assets")
-      .select("storage_path")
-      .eq("id", id)
-      .maybeSingle();
-    if (asset?.storage_path) {
-      const { data, error } = await database.storage
-        .from(PDF_BUCKET)
-        .download(asset.storage_path);
-      if (!error && data) return Buffer.from(await data.arrayBuffer());
-    }
-  }
   return fs.readFile(path.join(pdfDirectory, `${id}.pdf`));
 }
 
@@ -1507,7 +1493,6 @@ export async function addPdf(
   fileName: string,
   data: Buffer,
   villageId = DEFAULT_VILLAGE_ID,
-  existingStoragePath?: string,
 ) {
   await ensureStorage();
   const baseId = id.replace(/[^a-z0-9-]/gi, "-").toLowerCase() || "roll";
@@ -1549,40 +1534,22 @@ export async function addPdf(
   try {
     await fs.writeFile(temporaryPath, new Uint8Array(data));
     await fs.rename(temporaryPath, filePath);
-    if (database && !existingStoragePath) {
-      const { error: storageError } = await database.storage
-        .from(PDF_BUCKET)
-        .upload(`${safeId}.pdf`, data, {
-          contentType: "application/pdf",
-          upsert: false,
-        });
-      if (storageError)
-        throw new Error(
-          `Could not store PDF in Supabase Storage: ${storageError.message}`,
-        );
-    }
     await fs.writeFile(labelPath, safeName);
     villageAssignments[safeId] = villageId;
     await writeJson(villagePath, villageAssignments);
+    const storagePathLocal = path.join(pdfDirectory, `${safeId}.pdf`);
     await createDatabaseJob({
       id: safeId,
       name: safeName,
       villageId,
       sizeBytes: data.length,
-      storagePath: database
-        ? (existingStoragePath ?? `${safeId}.pdf`)
-        : undefined,
+      storagePath: storagePathLocal,
     });
     return (await listPdfs()).find((pdf) => pdf.id === safeId);
   } catch (error) {
     await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
     await fs.rm(filePath, { force: true }).catch(() => undefined);
     await fs.rm(labelPath, { force: true }).catch(() => undefined);
-    if (database) {
-      await database.storage
-        .from(PDF_BUCKET)
-        .remove([existingStoragePath ?? `${safeId}.pdf`]);
-    }
     if (hadVillageAssignment) villageAssignments[safeId] = previousVillage;
     else delete villageAssignments[safeId];
     await writeJson(villagePath, villageAssignments).catch(() => undefined);
@@ -1644,33 +1611,34 @@ export async function processQueuedJobs(limit = 1) {
     const temporaryPath = path.join(tmpdir(), `electoral-roll-${asset.id}.pdf`);
     try {
       const localPath = path.join(pdfDirectory, `${asset.id}.pdf`);
-      if (
-        await fs
-          .access(localPath)
-          .then(() => true)
-          .catch(() => false)
-      ) {
-        await fs.copyFile(localPath, temporaryPath);
-      } else {
-        const { data: storedPdf, error: storageError } = await database.storage
-          .from(PDF_BUCKET)
-          .download(asset.storage_path);
-        if (!storageError && storedPdf) {
-          await fs.writeFile(
-            temporaryPath,
-            new Uint8Array(await storedPdf.arrayBuffer()),
-          );
-        } else {
+      const fileExists = await fs
+        .access(localPath)
+        .then(() => true)
+        .catch(() => false);
+      if (!fileExists) {
+        const maybeFallbackPath = asset.storage_path &&
+          /^[a-z]:\\|^\//i.test(asset.storage_path)
+          ? asset.storage_path
+          : "";
+        const fallbackExists = maybeFallbackPath
+          ? await fs
+              .access(maybeFallbackPath)
+              .then(() => true)
+              .catch(() => false)
+          : false;
+        if (!fallbackExists) {
           throw new Error(
-            "The source PDF is missing from local and Supabase Storage",
+            "The source PDF is missing from the local data/pdfs folder. Re-upload the PDF to index it.",
           );
         }
+        await fs.copyFile(maybeFallbackPath, temporaryPath);
+      } else {
+        await fs.copyFile(localPath, temporaryPath);
       }
       await fs.mkdir(pdfDirectory, { recursive: true });
-      await fs.copyFile(
-        temporaryPath,
-        path.join(pdfDirectory, `${asset.id}.pdf`),
-      );
+      if (fileExists) {
+        await fs.copyFile(localPath, path.join(pdfDirectory, `${asset.id}.pdf`));
+      }
       await rebuildIndex([asset.id], new Map([[asset.id, job.id]]));
     } catch (workerError) {
       const message =

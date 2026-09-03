@@ -364,92 +364,19 @@ export default function AdminPage() {
     }
     try {
       const uploadName = `${Date.now()}-${crypto.randomUUID()}-${file.name}`;
-      console.log("[PDF Upload] Starting upload:", {
+      console.log("[PDF Upload] Simple direct upload:", {
         uploadName,
         size: file.size,
       });
 
-      const LARGE_FILE_THRESHOLD = 4 * 1024 * 1024;
-
-      async function directUpload(): Promise<Response> {
-        console.log("[PDF Upload] Using direct upload endpoint for:", file.name);
-        return fetch(
-          `/api/admin/pdfs?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/pdf" },
-            body: file,
-          },
-        );
-      }
-
-      let response: Response;
-      if (file.size <= LARGE_FILE_THRESHOLD) {
-        response = await directUpload();
-      } else {
-        const signResponse = await fetch("/api/admin/upload/signed-url", {
+      const response = await fetch(
+        `/api/admin/pdfs?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`,
+        {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ filename: uploadName, size: file.size }),
-        });
-        const signData = (await signResponse
-          .json()
-          .catch(() => null)) as {
-          error?: string;
-          path?: string;
-          signedUrl?: string;
-          fallbackToDirect?: boolean;
-        } | null;
-
-        if (!signResponse.ok) {
-          if (signData?.fallbackToDirect) {
-            console.warn(
-              "[PDF Upload] Signed URL setup failed, falling back to direct upload:",
-              signData.error,
-            );
-            response = await directUpload();
-          } else {
-            throw new Error(
-              signData?.error ||
-                `Large upload setup failed (${signResponse.status})`,
-            );
-          }
-        } else if (signData?.signedUrl && signData?.path) {
-          const signed = signData as { path: string; signedUrl: string };
-          console.log(
-            "[PDF Upload] Using signed upload for large file:",
-            file.size,
-          );
-
-          const uploadResponse = await fetch(signed.signedUrl, {
-            method: "PUT",
-            headers: { "Content-Type": "application/pdf" },
-            body: file,
-          });
-          if (!uploadResponse.ok) {
-            const text = await uploadResponse.text().catch(() => "");
-            throw new Error(
-              text || `Large upload failed (${uploadResponse.status})`,
-            );
-          }
-
-          response = await fetch("/api/admin/upload/complete", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              path: signed.path,
-              filename: file.name,
-              village,
-              size: file.size,
-            }),
-          });
-        } else {
-          console.warn(
-            "[PDF Upload] Signed URL response missing data, falling back to direct upload",
-          );
-          response = await directUpload();
-        }
-      }
+          headers: { "Content-Type": "application/pdf" },
+          body: file,
+        },
+      );
 
       if (!response.ok) {
         const data = (await response.json().catch(() => null)) as {
