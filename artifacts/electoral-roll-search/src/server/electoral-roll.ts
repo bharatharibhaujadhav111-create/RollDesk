@@ -1430,6 +1430,19 @@ export async function addPdf(
 ) {
   await ensureStorage();
   const baseId = id.replace(/[^a-z0-9-]/gi, "-").toLowerCase() || "roll";
+  const database = getSupabaseAdmin();
+  if (database) {
+    const { data: existing, error: existingError } = await database
+      .from("pdf_assets")
+      .select("id")
+      .eq("id", baseId)
+      .maybeSingle();
+    if (existingError)
+      throw new Error(
+        `Could not check existing PDF asset: ${existingError.message}`,
+      );
+    if (existing) return (await listPdfs()).find((pdf) => pdf.id === baseId);
+  }
   let safeId = baseId;
   let suffix = 2;
   while (

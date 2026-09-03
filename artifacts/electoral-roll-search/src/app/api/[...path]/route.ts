@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { get } from "@vercel/blob";
 import { handleUpload } from "@vercel/blob/client";
 import { after, NextResponse } from "next/server";
@@ -419,7 +419,7 @@ export async function POST(request: Request, context: RouteContext) {
       }
 
       try {
-        const id = `roll-${randomUUID()}`;
+        const id = `roll-${createHash("sha256").update(body.pathname).digest("hex").slice(0, 24)}`;
 
         console.log("[Blob Complete Route] Adding PDF to database:", {
           id,
