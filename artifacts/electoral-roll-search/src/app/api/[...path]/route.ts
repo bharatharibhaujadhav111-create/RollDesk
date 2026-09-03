@@ -165,6 +165,15 @@ export async function POST(request: Request, context: RouteContext) {
           { status: 503 },
         );
       }
+      if (!process.env.BLOB_WEBHOOK_PUBLIC_KEY) {
+        return NextResponse.json(
+          {
+            error:
+              "Vercel Blob webhook key is not configured. Add BLOB_WEBHOOK_PUBLIC_KEY to this deployment.",
+          },
+          { status: 503 },
+        );
+      }
       let body: Parameters<typeof handleUpload>[0]["body"];
       try {
         const parsed = (await request.json()) as Record<string, unknown>;
