@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { get } from "@vercel/blob";
 import { handleUpload } from "@vercel/blob/client";
 import { NextResponse } from "next/server";
 import {
@@ -154,25 +155,25 @@ export async function POST(request: Request, context: RouteContext) {
       segments[1] === "blob-complete"
     ) {
       const body = (await request.json()) as {
-        url?: string;
+        pathname?: string;
         filename?: string;
         village?: string;
       };
       const village = VILLAGES.find((item) => item.id === body.village);
-      if (!village || !body.url || !body.filename) {
+      if (!village || !body.pathname || !body.filename) {
         return NextResponse.json(
           { error: "A valid file and village are required" },
           { status: 400 },
         );
       }
-      const response = await fetch(body.url);
-      if (!response.ok) {
+      const blob = await get(body.pathname, { access: "private" });
+      if (!blob) {
         return NextResponse.json(
           { error: "The uploaded file could not be read" },
           { status: 502 },
         );
       }
-      const buffer = Buffer.from(await response.arrayBuffer());
+      const buffer = Buffer.from(await new Response(blob.stream).arrayBuffer());
       if (buffer.length > MAX_UPLOAD_BYTES) {
         return NextResponse.json(
           { error: "The uploaded file is too large" },

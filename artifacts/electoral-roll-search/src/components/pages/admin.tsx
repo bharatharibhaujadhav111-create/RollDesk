@@ -333,13 +333,17 @@ export default function AdminPage() {
     }
     try {
       const blob = await upload(file.name, file, {
-        access: "public",
+        access: "private",
         handleUploadUrl: "/api/admin/blob-upload",
       });
       const response = await fetch("/api/admin/blob-complete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: blob.url, filename: file.name, village }),
+        body: JSON.stringify({
+          pathname: blob.pathname,
+          filename: file.name,
+          village,
+        }),
       });
       if (!response.ok) {
         const data = (await response.json().catch(() => null)) as {
