@@ -369,9 +369,11 @@ export default function AdminPage() {
         size: file.size,
       });
 
-      let response: Response;
-      if (file.size <= 4 * 1024 * 1024) {
-        response = await fetch(
+      const LARGE_FILE_THRESHOLD = 4 * 1024 * 1024;
+
+      async function directUpload(): Promise<Response> {
+        console.log("[PDF Upload] Using direct upload endpoint for:", file.name);
+        return fetch(
           `/api/admin/pdfs?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`,
           {
             method: "POST",
@@ -379,47 +381,74 @@ export default function AdminPage() {
             body: file,
           },
         );
+      }
+
+      let response: Response;
+      if (file.size <= LARGE_FILE_THRESHOLD) {
+        response = await directUpload();
       } else {
         const signResponse = await fetch("/api/admin/upload/signed-url", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ filename: uploadName, size: file.size }),
         });
+        const signData = (await signResponse
+          .json()
+          .catch(() => null)) as {
+          error?: string;
+          path?: string;
+          signedUrl?: string;
+          fallbackToDirect?: boolean;
+        } | null;
+
         if (!signResponse.ok) {
-          const data = (await signResponse.json().catch(() => null)) as {
-            error?: string;
-          } | null;
-          throw new Error(
-            data?.error || `Large upload setup failed (${signResponse.status})`,
+          if (signData?.fallbackToDirect) {
+            console.warn(
+              "[PDF Upload] Signed URL setup failed, falling back to direct upload:",
+              signData.error,
+            );
+            response = await directUpload();
+          } else {
+            throw new Error(
+              signData?.error ||
+                `Large upload setup failed (${signResponse.status})`,
+            );
+          }
+        } else if (signData?.signedUrl && signData?.path) {
+          const signed = signData as { path: string; signedUrl: string };
+          console.log(
+            "[PDF Upload] Using signed upload for large file:",
+            file.size,
           );
-        }
-        const signed = (await signResponse.json()) as {
-          path: string;
-          signedUrl: string;
-        };
 
-        const uploadResponse = await fetch(signed.signedUrl, {
-          method: "PUT",
-          headers: { "Content-Type": "application/pdf" },
-          body: file,
-        });
-        if (!uploadResponse.ok) {
-          const text = await uploadResponse.text().catch(() => "");
-          throw new Error(
-            text || `Large upload failed (${uploadResponse.status})`,
+          const uploadResponse = await fetch(signed.signedUrl, {
+            method: "PUT",
+            headers: { "Content-Type": "application/pdf" },
+            body: file,
+          });
+          if (!uploadResponse.ok) {
+            const text = await uploadResponse.text().catch(() => "");
+            throw new Error(
+              text || `Large upload failed (${uploadResponse.status})`,
+            );
+          }
+
+          response = await fetch("/api/admin/upload/complete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              path: signed.path,
+              filename: file.name,
+              village,
+              size: file.size,
+            }),
+          });
+        } else {
+          console.warn(
+            "[PDF Upload] Signed URL response missing data, falling back to direct upload",
           );
+          response = await directUpload();
         }
-
-        response = await fetch("/api/admin/upload/complete", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            path: signed.path,
-            filename: file.name,
-            village,
-            size: file.size,
-          }),
-        });
       }
 
       if (!response.ok) {

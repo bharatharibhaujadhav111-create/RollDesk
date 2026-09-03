@@ -151,7 +151,10 @@ export async function POST(request: Request, context: RouteContext) {
       const database = getSupabaseAdmin();
       if (!database) {
         return NextResponse.json(
-          { error: "Supabase is not configured" },
+          {
+            error: "Supabase is not configured",
+            fallbackToDirect: true,
+          },
           { status: 503 },
         );
       }
@@ -171,22 +174,71 @@ export async function POST(request: Request, context: RouteContext) {
           { status: 400 },
         );
       }
-      const storagePath = `uploads/${randomUUID()}.pdf`;
-      const { data, error } = await database.storage
-        .from("electoral-roll-pdfs")
-        .createSignedUploadUrl(storagePath, { upsert: false });
-      if (error || !data) {
+
+      const MAX_DIRECT_UPLOAD = 50 * 1024 * 1024;
+      if (size <= MAX_DIRECT_UPLOAD) {
         return NextResponse.json(
           {
-            error: `Could not create signed upload URL: ${error?.message ?? "unknown error"}`,
+            error:
+              "Signed upload is unavailable. Use the direct upload endpoint instead.",
+            fallbackToDirect: true,
           },
-          { status: 502 },
+          { status: 503 },
         );
       }
-      return NextResponse.json({
-        path: storagePath,
-        signedUrl: data.signedUrl,
-      });
+
+      try {
+        const { data: bucket } = await database.storage
+          .getBucket("electoral-roll-pdfs")
+          .catch(() => ({ data: null }));
+
+        if (!bucket) {
+          const { error: bucketError } = await database.storage.createBucket(
+            "electoral-roll-pdfs",
+            { public: false, fileSizeLimit: 100 * 1024 * 1024 },
+          );
+          if (bucketError && !/already exists/i.test(bucketError.message || "")) {
+            return NextResponse.json(
+              {
+                error: `Storage bucket is unavailable: ${bucketError.message || "unknown"}`,
+                fallbackToDirect: size <= MAX_DIRECT_UPLOAD,
+              },
+              { status: 503 },
+            );
+          }
+        }
+
+        const storagePath = `uploads/${randomUUID()}.pdf`;
+        const { data, error } = await database.storage
+          .from("electoral-roll-pdfs")
+          .createSignedUploadUrl(storagePath, { upsert: false });
+
+        if (error || !data) {
+          return NextResponse.json(
+            {
+              error: `Could not create signed upload URL: ${error?.message ?? "unknown error"}`,
+              fallbackToDirect: size <= MAX_DIRECT_UPLOAD,
+            },
+            { status: 502 },
+          );
+        }
+
+        return NextResponse.json({
+          path: storagePath,
+          signedUrl: data.signedUrl,
+        });
+      } catch (caught) {
+        const message =
+          caught instanceof Error ? caught.message : "unknown server error";
+        console.error("[upload/signed-url] setup failed:", caught);
+        return NextResponse.json(
+          {
+            error: `Large upload setup failed: ${message}`,
+            fallbackToDirect: size <= MAX_DIRECT_UPLOAD,
+          },
+          { status: 500 },
+        );
+      }
     }
     if (
       segments.length === 3 &&

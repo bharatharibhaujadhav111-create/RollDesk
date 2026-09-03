@@ -123,6 +123,8 @@ let state: IndexState = {
 let initialized = false;
 let rebuildRequested = false;
 let ocrLanguagePromise: Promise<string> | null = null;
+let lastDbRefreshAt = 0;
+const DB_REFRESH_INTERVAL_MS = 10_000;
 
 type SearchDocument = {
   record: RollRecord;
@@ -377,36 +379,64 @@ function wordScore(query: string, target: string) {
   const t = clean(target);
   if (!q || !t) return 0;
   if (t === q) return 1;
-  if (t.includes(q)) return 0.96;
-  const qWords = q.split(" ");
-  const tWords = t.split(" ");
+  if (t.startsWith(q)) return 0.98;
+  if (q.startsWith(t)) return 0.94;
+  if (t.includes(q)) return 0.92;
+  const qWords = q.split(/\s+/).filter(Boolean);
+  const tWords = t.split(/\s+/).filter(Boolean);
+  const prefixMatches = qWords.filter((part) =>
+    tWords.some((word) => word.startsWith(part)),
+  ).length;
+  const prefixBoost = prefixMatches / Math.max(qWords.length, 1) * 0.04;
   const scores = qWords.map((part) => {
     const best = tWords.reduce((current, targetWord) => {
       const distance = editDistance(part, targetWord);
-      const fuzzy = 1 - distance / Math.max(part.length, targetWord.length);
-      const phonetic = soundex(part) === soundex(targetWord) ? 0.78 : 0;
-      return Math.max(current, fuzzy, phonetic);
+      const maxLen = Math.max(1, part.length, targetWord.length);
+      const fuzzy = 1 - distance / maxLen;
+      const phonetic = soundex(part) === soundex(targetWord) ? 0.74 : 0;
+      const prefix =
+        targetWord.startsWith(part) ? 0.96
+          : part.startsWith(targetWord) ? 0.92
+            : part.length >= 2 && targetWord.startsWith(part.slice(0, 2)) ? 0.86
+              : targetWord.includes(part) ? 0.8
+                : 0;
+      return Math.max(current, fuzzy, phonetic, prefix);
     }, 0);
     return best;
   });
-  return scores.reduce((sum, value) => sum + value, 0) / scores.length;
+  const avg = scores.reduce((sum, value) => sum + value, 0) / scores.length;
+  return Math.min(1, avg + prefixBoost);
 }
 
 function normalizedWordScore(query: string, target: string) {
   if (!query || !target) return 0;
   if (target === query) return 1;
-  if (target.includes(query)) return 0.96;
-  const qWords = query.split(" ");
-  const tWords = target.split(" ");
+  if (target.startsWith(query)) return 0.98;
+  if (query.startsWith(target)) return 0.94;
+  if (target.includes(query)) return 0.92;
+  const qWords = query.split(/\s+/).filter(Boolean);
+  const tWords = target.split(/\s+/).filter(Boolean);
+  const prefixMatches = qWords.filter((part) =>
+    tWords.some((word) => word.startsWith(part)),
+  ).length;
+  const prefixBoost = prefixMatches / Math.max(qWords.length, 1) * 0.04;
   const scores = qWords.map((part) =>
     tWords.reduce((current, targetWord) => {
       const distance = editDistance(part, targetWord);
-      const fuzzy = 1 - distance / Math.max(part.length, targetWord.length);
-      const phonetic = soundex(part) === soundex(targetWord) ? 0.78 : 0;
-      return Math.max(current, fuzzy, phonetic);
+      const maxLen = Math.max(1, part.length, targetWord.length);
+      const fuzzy = 1 - distance / maxLen;
+      const phonetic = soundex(part) === soundex(targetWord) ? 0.74 : 0;
+      const prefix =
+        targetWord.startsWith(part) ? 0.96
+          : part.startsWith(targetWord) ? 0.92
+            : part.length >= 2 && targetWord.startsWith(part.slice(0, 2)) ? 0.86
+              : targetWord.includes(part) ? 0.8
+                : 0;
+      return Math.max(current, fuzzy, phonetic, prefix);
     }, 0),
   );
-  return scores.reduce((sum, value) => sum + value, 0) / scores.length;
+  const avg = scores.reduce((sum, value) => sum + value, 0) / scores.length;
+  return Math.min(1, avg + prefixBoost);
 }
 
 export function parseSearchQuery(query: string) {
@@ -1065,9 +1095,11 @@ async function getPageCount(filePath: string) {
   }
 }
 
-async function refreshDatabaseRecords() {
+async function refreshDatabaseRecords(force = false) {
   const database = getSupabaseAdmin();
   if (!database) return;
+  const now = Date.now();
+  if (!force && now - lastDbRefreshAt < DB_REFRESH_INTERVAL_MS) return;
   const { data: databaseRecords, error } = await database
     .from("voters")
     .select(
@@ -1093,6 +1125,7 @@ async function refreshDatabaseRecords() {
     pdfName: row.pdf_id,
   }));
   rebuildSearchDocuments();
+  lastDbRefreshAt = now;
 }
 
 export async function ensureStorage() {
@@ -1329,7 +1362,7 @@ export async function searchIndex(
   villageId = DEFAULT_VILLAGE_ID,
 ) {
   await ensureStorage();
-  await refreshDatabaseRecords();
+  await refreshDatabaseRecords(false);
   const filters = parseSearchQuery(query);
   const normalizedName = clean(filters.name ?? "");
   const normalizedRelativeName = clean(filters.relativeName ?? "");
@@ -1338,7 +1371,8 @@ export async function searchIndex(
     villageId === "all"
       ? searchDocuments
       : searchDocuments.filter(
-          ({ record }) => villageForPdf(record.pdfId) === villageId,
+          ({ record }) =>
+            (record.villageId ?? villageForPdf(record.pdfId)) === villageId,
         );
   const scored = scopedRecords
     .map((document) => {
@@ -1350,29 +1384,34 @@ export async function searchIndex(
         ? normalizedWordScore(normalizedRelativeName, document.relativeName)
         : 0;
       const epicScore = normalizedEpic
-        ? document.epicNumber.includes(normalizedEpic)
+        ? document.epicNumber === normalizedEpic
           ? 1
-          : 0
+          : document.epicNumber.startsWith(normalizedEpic)
+            ? 0.98
+            : document.epicNumber.includes(normalizedEpic)
+              ? 0.9
+              : 0
         : 0;
       const score = filters.epicNumber
         ? epicScore
         : filters.name && filters.relativeName
-          ? nameScore * 0.65 + relativeScore * 0.35
+          ? nameScore * 0.62 + relativeScore * 0.38
           : Math.max(nameScore, relativeScore);
+      const matched: string[] = [];
+      if (nameScore > 0.62) matched.push("name");
+      if (relativeScore > 0.62) matched.push("father");
+      if (epicScore > 0.8) matched.push("EPIC");
+      const confidenceBoost = record.confidence >= 0.8 ? 0.01 : 0;
       return {
         ...record,
-        score: Number(score.toFixed(3)),
-        matchedBy: [
-          nameScore > 0.62 ? "name" : "",
-          relativeScore > 0.62 ? "father" : "",
-          epicScore ? "EPIC" : "",
-        ].filter(Boolean),
+        score: Number(Math.min(1, score + confidenceBoost).toFixed(3)),
+        matchedBy: matched,
       };
     })
     .filter((record) =>
       !filters.epicNumber
-        ? record.score >= (filters.name && filters.relativeName ? 0.48 : 0.45)
-        : record.score === 1,
+        ? record.score >= (filters.name && filters.relativeName ? 0.46 : 0.43)
+        : record.score >= 0.9,
     )
     .sort((a, b) => b.score - a.score);
   const start = (page - 1) * pageSize;
@@ -1392,32 +1431,75 @@ export async function getSuggestions(query: string) {
   await ensureStorage();
   const normalized = clean(query);
   if (normalized.length < 2) return [];
-  const values = new Map<
-    string,
-    { label: string; value: string; kind: string }
-  >();
+  type ScoredSuggestion = {
+    label: string;
+    value: string;
+    kind: string;
+    score: number;
+  };
+  const voterMap = new Map<string, ScoredSuggestion>();
+  const epicMap = new Map<string, ScoredSuggestion>();
+  const relativeMap = new Map<string, ScoredSuggestion>();
   for (const document of searchDocuments) {
     const { record } = document;
-    if (
-      document.voterName.includes(normalized) ||
-      document.relativeName.includes(normalized) ||
-      document.epicNumber.includes(normalized)
-    ) {
-      values.set(record.voterName, {
-        label: record.voterName,
-        value: record.voterName,
-        kind: "Voter name",
-      });
-      if (record.epicNumber)
-        values.set(record.epicNumber, {
-          label: record.epicNumber,
-          value: record.epicNumber,
-          kind: "EPIC number",
-        });
+    if (document.voterName) {
+      const voterScore = normalizedWordScore(normalized, document.voterName);
+      if (voterScore >= 0.5) {
+        const existing = voterMap.get(record.voterName);
+        if (!existing || voterScore > existing.score) {
+          voterMap.set(record.voterName, {
+            label: record.voterName,
+            value: record.voterName,
+            kind: "Voter name",
+            score: voterScore,
+          });
+        }
+      }
     }
-    if (values.size >= 12) break;
+    if (record.epicNumber && document.epicNumber) {
+      const epicScore =
+        document.epicNumber.startsWith(normalized) ? 0.99
+          : document.epicNumber.includes(normalized) ? 0.9
+            : normalizedWordScore(normalized, document.epicNumber);
+      if (epicScore >= 0.6) {
+        const existing = epicMap.get(record.epicNumber);
+        if (!existing || epicScore > existing.score) {
+          epicMap.set(record.epicNumber, {
+            label: record.epicNumber,
+            value: record.epicNumber,
+            kind: "EPIC number",
+            score: epicScore,
+          });
+        }
+      }
+    }
+    if (document.relativeName) {
+      const relScore = normalizedWordScore(normalized, document.relativeName);
+      if (relScore >= 0.65) {
+        const key = `rel:${record.relativeName}`;
+        const existing = relativeMap.get(key);
+        if (!existing || relScore > existing.score) {
+          relativeMap.set(key, {
+            label: record.relativeName,
+            value: record.relativeName,
+            kind: "Relative name",
+            score: relScore,
+          });
+        }
+      }
+    }
   }
-  return Array.from(values.values()).slice(0, 6);
+  const all: ScoredSuggestion[] = [
+    ...Array.from(voterMap.values()),
+    ...Array.from(epicMap.values()),
+    ...Array.from(relativeMap.values()),
+  ].sort((a, b) => b.score - a.score);
+  const deduped = new Map<string, ScoredSuggestion>();
+  for (const item of all) {
+    const key = `${item.kind}:${item.value}`;
+    if (!deduped.has(key)) deduped.set(key, item);
+  }
+  return Array.from(deduped.values()).slice(0, 8);
 }
 
 export async function addPdf(
