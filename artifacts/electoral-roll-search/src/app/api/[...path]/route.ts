@@ -156,7 +156,10 @@ export async function POST(request: Request, context: RouteContext) {
       segments[0] === "admin" &&
       segments[1] === "blob-upload"
     ) {
+      console.log("[Blob Upload Route] Received upload request");
+
       if (!process.env.BLOB_READ_WRITE_TOKEN) {
+        console.error("[Blob Upload Route] Missing BLOB_READ_WRITE_TOKEN");
         return NextResponse.json(
           {
             error:
@@ -165,11 +168,32 @@ export async function POST(request: Request, context: RouteContext) {
           { status: 503 },
         );
       }
-      // BLOB_WEBHOOK_PUBLIC_KEY is optional (only needed on Pro plan for webhook verification)
-      // Free tier users don't need it for basic uploads
+
+      // Parse request body - handle both form-data and JSON
       let body: Parameters<typeof handleUpload>[0]["body"];
       try {
+        const contentType = request.headers.get("content-type") || "";
+
+        if (contentType.includes("multipart/form-data")) {
+          // This shouldn't happen with Vercel Blob SDK client, but handle it
+          console.warn(
+            "[Blob Upload Route] Received multipart/form-data, expected JSON",
+          );
+          return NextResponse.json(
+            { error: "This endpoint expects Vercel Blob SDK client requests" },
+            { status: 400 },
+          );
+        }
+
         const parsed = (await request.json()) as Record<string, unknown>;
+
+        // Log what we received for debugging
+        console.log("[Blob Upload Route] Parsed request body:", {
+          type: parsed.type,
+          hasPayload: !!parsed.payload,
+          keys: Object.keys(parsed),
+        });
+
         if (
           typeof parsed !== "object" ||
           parsed === null ||
@@ -177,35 +201,89 @@ export async function POST(request: Request, context: RouteContext) {
           typeof parsed.payload !== "object" ||
           parsed.payload === null
         ) {
+          console.error("[Blob Upload Route] Invalid body structure:", parsed);
           return NextResponse.json(
-            { error: "Invalid Blob upload request" },
+            { error: "Invalid Blob upload request body structure" },
             { status: 400 },
           );
         }
+
         body = parsed as unknown as Parameters<typeof handleUpload>[0]["body"];
       } catch (err) {
-        console.error("Blob upload body parse error:", err);
+        console.error("[Blob Upload Route] Failed to parse request:", err);
         return NextResponse.json(
-          { error: "Invalid Blob upload request" },
+          {
+            error: `Request parsing error: ${err instanceof Error ? err.message : "Unknown error"}`,
+          },
           { status: 400 },
         );
       }
+
       try {
+        console.log(
+          "[Blob Upload Route] Calling handleUpload with body type:",
+          body.type,
+        );
+
         const jsonResponse = await handleUpload({
           body,
           request,
-          onBeforeGenerateToken: async () => ({
-            allowedContentTypes: ["application/pdf"],
-            maximumSizeInBytes: MAX_UPLOAD_BYTES,
-          }),
-          onUploadCompleted: async () => undefined,
+          onBeforeGenerateToken: async () => {
+            console.log(
+              "[Blob Upload Route] Generating token - validating PDF",
+            );
+            return {
+              allowedContentTypes: ["application/pdf"],
+              maximumSizeInBytes: MAX_UPLOAD_BYTES,
+            };
+          },
+          onUploadCompleted: async ({ blob: uploadedBlob }) => {
+            console.log("[Blob Upload Route] Upload completed:", {
+              pathname: uploadedBlob?.pathname,
+              contentType: uploadedBlob?.contentType,
+            });
+            return undefined;
+          },
         });
+
+        console.log("[Blob Upload Route] handleUpload succeeded, response:", {
+          keys: Object.keys(jsonResponse || {}),
+        });
+
+        // Validate response has expected shape
+        if (!jsonResponse || typeof jsonResponse !== "object") {
+          console.error(
+            "[Blob Upload Route] Invalid response from handleUpload",
+          );
+          return NextResponse.json(
+            { error: "Upload handler returned invalid response" },
+            { status: 502 },
+          );
+        }
+
         return NextResponse.json(jsonResponse);
       } catch (err) {
-        console.error("handleUpload error:", err);
+        console.error("[Blob Upload Route] handleUpload failed:", err);
         const errorMessage = err instanceof Error ? err.message : String(err);
+
+        // Return more helpful error based on error type
+        if (errorMessage.includes("PDF")) {
+          return NextResponse.json(
+            { error: "Only PDF files are allowed" },
+            { status: 400 },
+          );
+        }
+        if (errorMessage.includes("size") || errorMessage.includes("exceed")) {
+          return NextResponse.json(
+            {
+              error: `File too large (max ${MAX_UPLOAD_BYTES / 1024 / 1024}MB)`,
+            },
+            { status: 413 },
+          );
+        }
+
         return NextResponse.json(
-          { error: `Blob upload failed: ${errorMessage}` },
+          { error: `Upload failed: ${errorMessage}` },
           { status: 502 },
         );
       }
@@ -215,6 +293,8 @@ export async function POST(request: Request, context: RouteContext) {
       segments[0] === "admin" &&
       segments[1] === "blob-complete"
     ) {
+      console.log("[Blob Complete Route] Received blob-complete request");
+
       let body: {
         pathname?: string;
         filename?: string;
@@ -226,8 +306,13 @@ export async function POST(request: Request, context: RouteContext) {
           filename?: string;
           village?: string;
         };
+        console.log("[Blob Complete Route] Parsed body:", {
+          pathname: body.pathname,
+          filename: body.filename,
+          village: body.village,
+        });
       } catch (err) {
-        console.error("blob-complete request parse error:", err);
+        console.error("[Blob Complete Route] Request parse error:", err);
         return NextResponse.json(
           { error: "Invalid request body" },
           { status: 400 },
@@ -236,42 +321,68 @@ export async function POST(request: Request, context: RouteContext) {
 
       const village = VILLAGES.find((item) => item.id === body.village);
       if (!village || !body.pathname || !body.filename) {
+        console.error("[Blob Complete Route] Missing required fields:", {
+          hasVillage: !!village,
+          pathname: body.pathname,
+          filename: body.filename,
+        });
         return NextResponse.json(
-          { error: "A valid file and village are required" },
+          { error: "A valid file, pathname, and village are required" },
           { status: 400 },
         );
       }
 
       let blob;
       try {
+        console.log(
+          "[Blob Complete Route] Retrieving blob from:",
+          body.pathname,
+        );
         blob = await get(body.pathname, { access: "private" });
       } catch (err) {
-        console.error("Failed to retrieve blob:", body.pathname, err);
-        return NextResponse.json(
-          { error: "The uploaded file could not be retrieved from storage" },
-          { status: 502 },
+        console.error(
+          "[Blob Complete Route] Failed to retrieve blob from Vercel:",
+          {
+            pathname: body.pathname,
+            error: err instanceof Error ? err.message : String(err),
+          },
         );
+        // Don't fail yet - might be a temporary issue, but continue with caution
+        blob = null;
       }
 
       if (!blob) {
+        console.error(
+          "[Blob Complete Route] Blob not found at pathname:",
+          body.pathname,
+        );
         return NextResponse.json(
-          { error: "The uploaded file was not found in storage" },
+          {
+            error:
+              "The uploaded file was not found in storage. Please try uploading again.",
+            details: "The Blob storage service may be temporarily unavailable.",
+          },
           { status: 404 },
         );
       }
 
       let buffer: Buffer;
       try {
-        buffer = Buffer.from(await new Response(blob.stream).arrayBuffer());
+        console.log("[Blob Complete Route] Reading blob stream");
+        const arrayBuffer = await new Response(blob.stream).arrayBuffer();
+        buffer = Buffer.from(arrayBuffer);
+        console.log("[Blob Complete Route] Read buffer, size:", buffer.length);
       } catch (err) {
-        console.error("Failed to read blob stream:", err);
+        console.error("[Blob Complete Route] Failed to read blob stream:", err);
         return NextResponse.json(
-          { error: "The uploaded file could not be read" },
+          { error: "Failed to read the uploaded file from storage" },
           { status: 502 },
         );
       }
 
+      // Validate buffer
       if (buffer.length === 0) {
+        console.error("[Blob Complete Route] Buffer is empty");
         return NextResponse.json(
           { error: "The uploaded file is empty" },
           { status: 400 },
@@ -279,15 +390,29 @@ export async function POST(request: Request, context: RouteContext) {
       }
 
       if (buffer.length > MAX_UPLOAD_BYTES) {
+        console.error("[Blob Complete Route] Buffer exceeds max size:", {
+          size: buffer.length,
+          max: MAX_UPLOAD_BYTES,
+        });
         return NextResponse.json(
-          { error: "The uploaded file is too large" },
+          {
+            error: `File exceeds maximum size of ${MAX_UPLOAD_BYTES / 1024 / 1024}MB`,
+          },
           { status: 413 },
         );
       }
 
-      if (buffer.length < 5 || buffer.subarray(0, 5).toString() !== "%PDF-") {
+      // Verify PDF header
+      const pdfHeader = buffer.subarray(0, 5).toString();
+      if (pdfHeader !== "%PDF-") {
+        console.error("[Blob Complete Route] Invalid PDF header:", {
+          header: pdfHeader,
+        });
         return NextResponse.json(
-          { error: "The uploaded file is not a valid PDF" },
+          {
+            error: "The uploaded file is not a valid PDF",
+            details: `Expected PDF header, got: ${pdfHeader}`,
+          },
           { status: 400 },
         );
       }
@@ -297,11 +422,19 @@ export async function POST(request: Request, context: RouteContext) {
           .basename(body.filename, path.extname(body.filename))
           .replace(/[^a-z0-9-]/gi, "-")
           .toLowerCase();
+
+        console.log("[Blob Complete Route] Adding PDF to database:", {
+          id,
+          village: village.id,
+        });
         const asset = await addPdf(id, body.filename, buffer, village.id);
+
+        console.log("[Blob Complete Route] PDF added successfully:", asset);
         scheduleIndexing();
+
         return NextResponse.json(asset, { status: 201 });
       } catch (err) {
-        console.error("Failed to add PDF to database:", err);
+        console.error("[Blob Complete Route] Failed to add PDF:", err);
         const errorMessage = err instanceof Error ? err.message : String(err);
         return NextResponse.json(
           { error: `Failed to save PDF: ${errorMessage}` },

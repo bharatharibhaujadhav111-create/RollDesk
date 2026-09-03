@@ -365,10 +365,32 @@ export default function AdminPage() {
     }
     try {
       const uniqueName = `${Date.now()}-${crypto.randomUUID()}-${file.name}`;
-      const blob = await upload(uniqueName, file, {
-        access: "private",
-        handleUploadUrl: "/api/admin/blob-upload",
+      console.log("[PDF Upload] Starting upload:", {
+        uniqueName,
+        size: file.size,
       });
+
+      let blob;
+      try {
+        blob = await upload(uniqueName, file, {
+          access: "private",
+          handleUploadUrl: "/api/admin/blob-upload",
+        });
+        console.log("[PDF Upload] Blob upload succeeded:", {
+          pathname: blob.pathname,
+        });
+      } catch (uploadErr) {
+        const uploadError =
+          uploadErr instanceof Error ? uploadErr.message : String(uploadErr);
+        console.error("[PDF Upload] Blob upload failed:", uploadError);
+        throw new Error(`Blob upload error: ${uploadError}`);
+      }
+
+      if (!blob?.pathname) {
+        throw new Error("Blob upload did not return a valid pathname");
+      }
+
+      console.log("[PDF Upload] Completing upload via blob-complete endpoint");
       const response = await fetch("/api/admin/blob-complete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -378,13 +400,21 @@ export default function AdminPage() {
           village,
         }),
       });
+
       if (!response.ok) {
         const data = (await response.json().catch(() => null)) as {
           error?: string;
         } | null;
+        console.error("[PDF Upload] blob-complete failed:", {
+          status: response.status,
+          error: data?.error,
+        });
         throw new Error(data?.error || `HTTP ${response.status}`);
       }
-      setNotice(`${file.name} uploaded. Indexing has started.`);
+
+      const result = await response.json();
+      console.log("[PDF Upload] Success:", result);
+      setNotice(`${file.name} uploaded successfully. Indexing started.`);
       queryClient.invalidateQueries({ queryKey: getListPdfAssetsQueryKey() });
       queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });
       return true;
@@ -395,6 +425,7 @@ export default function AdminPage() {
           : typeof error === "string"
             ? error
             : "The upload was interrupted. Please try again.";
+      console.error("[PDF Upload] Fatal error:", message);
       setUploadError(`Upload failed: ${message}`);
       return false;
     }
@@ -809,7 +840,9 @@ export default function AdminPage() {
             {visibleAssets.length} files
           </span>
         </div>
-        {visibleAssets.length > 0 && !assetsQuery.isLoading && !assetsQuery.isError ? (
+        {visibleAssets.length > 0 &&
+        !assetsQuery.isLoading &&
+        !assetsQuery.isError ? (
           <div className="mb-4 flex gap-2 overflow-x-auto pb-1">
             {displayVillageGroups.map((group) => (
               <a
