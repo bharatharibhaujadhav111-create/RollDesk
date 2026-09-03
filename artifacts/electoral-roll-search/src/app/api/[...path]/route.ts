@@ -190,33 +190,69 @@ export async function POST(request: Request, context: RouteContext) {
           );
         }
         body = parsed as unknown as Parameters<typeof handleUpload>[0]["body"];
-      } catch {
+      } catch (err) {
+        console.error("Blob upload body parse error:", err);
         return NextResponse.json(
           { error: "Invalid Blob upload request" },
           { status: 400 },
         );
       }
-      const jsonResponse = await handleUpload({
-        body,
-        request,
-        onBeforeGenerateToken: async () => ({
-          allowedContentTypes: ["application/pdf"],
-          maximumSizeInBytes: MAX_UPLOAD_BYTES,
-        }),
-        onUploadCompleted: async () => undefined,
-      });
-      return NextResponse.json(jsonResponse);
+      try {
+        const jsonResponse = await handleUpload({
+          body,
+          request,
+          onBeforeGenerateToken: async () => ({
+            allowedContentTypes: ["application/pdf"],
+            maximumSizeInBytes: MAX_UPLOAD_BYTES,
+          }),
+          onUploadCompleted: async () => undefined,
+        });
+        return NextResponse.json(jsonResponse);
+      } catch (err) {
+        console.error("handleUpload error:", err);
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        if (
+          errorMessage.includes("webhook") ||
+          errorMessage.includes("BLOB_WEBHOOK")
+        ) {
+          return NextResponse.json(
+            {
+              error:
+                "Vercel Blob webhook key is not configured. Add BLOB_WEBHOOK_PUBLIC_KEY to this deployment.",
+            },
+            { status: 503 },
+          );
+        }
+        return NextResponse.json(
+          { error: `Blob upload failed: ${errorMessage}` },
+          { status: 502 },
+        );
+      }
     }
     if (
       segments.length === 2 &&
       segments[0] === "admin" &&
       segments[1] === "blob-complete"
     ) {
-      const body = (await request.json()) as {
+      let body: {
         pathname?: string;
         filename?: string;
         village?: string;
       };
+      try {
+        body = (await request.json()) as {
+          pathname?: string;
+          filename?: string;
+          village?: string;
+        };
+      } catch (err) {
+        console.error("blob-complete request parse error:", err);
+        return NextResponse.json(
+          { error: "Invalid request body" },
+          { status: 400 },
+        );
+      }
+
       const village = VILLAGES.find((item) => item.id === body.village);
       if (!village || !body.pathname || !body.filename) {
         return NextResponse.json(
@@ -224,33 +260,73 @@ export async function POST(request: Request, context: RouteContext) {
           { status: 400 },
         );
       }
-      const blob = await get(body.pathname, { access: "private" });
+
+      let blob;
+      try {
+        blob = await get(body.pathname, { access: "private" });
+      } catch (err) {
+        console.error("Failed to retrieve blob:", body.pathname, err);
+        return NextResponse.json(
+          { error: "The uploaded file could not be retrieved from storage" },
+          { status: 502 },
+        );
+      }
+
       if (!blob) {
+        return NextResponse.json(
+          { error: "The uploaded file was not found in storage" },
+          { status: 404 },
+        );
+      }
+
+      let buffer: Buffer;
+      try {
+        buffer = Buffer.from(await new Response(blob.stream).arrayBuffer());
+      } catch (err) {
+        console.error("Failed to read blob stream:", err);
         return NextResponse.json(
           { error: "The uploaded file could not be read" },
           { status: 502 },
         );
       }
-      const buffer = Buffer.from(await new Response(blob.stream).arrayBuffer());
+
+      if (buffer.length === 0) {
+        return NextResponse.json(
+          { error: "The uploaded file is empty" },
+          { status: 400 },
+        );
+      }
+
       if (buffer.length > MAX_UPLOAD_BYTES) {
         return NextResponse.json(
           { error: "The uploaded file is too large" },
           { status: 413 },
         );
       }
+
       if (buffer.length < 5 || buffer.subarray(0, 5).toString() !== "%PDF-") {
         return NextResponse.json(
           { error: "The uploaded file is not a valid PDF" },
           { status: 400 },
         );
       }
-      const id = path
-        .basename(body.filename, path.extname(body.filename))
-        .replace(/[^a-z0-9-]/gi, "-")
-        .toLowerCase();
-      const asset = await addPdf(id, body.filename, buffer, village.id);
-      scheduleIndexing();
-      return NextResponse.json(asset, { status: 201 });
+
+      try {
+        const id = path
+          .basename(body.filename, path.extname(body.filename))
+          .replace(/[^a-z0-9-]/gi, "-")
+          .toLowerCase();
+        const asset = await addPdf(id, body.filename, buffer, village.id);
+        scheduleIndexing();
+        return NextResponse.json(asset, { status: 201 });
+      } catch (err) {
+        console.error("Failed to add PDF to database:", err);
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        return NextResponse.json(
+          { error: `Failed to save PDF: ${errorMessage}` },
+          { status: 500 },
+        );
+      }
     }
     if (
       segments.length === 2 &&
