@@ -333,9 +333,9 @@ export default function AdminPage() {
       return false;
     }
     try {
-      const blob = await upload(file.name, file, {
+      const uniqueName = `${Date.now()}-${crypto.randomUUID()}-${file.name}`;
+      const blob = await upload(uniqueName, file, {
         access: "private",
-        addRandomSuffix: true,
         handleUploadUrl: "/api/admin/blob-upload",
       });
       const response = await fetch("/api/admin/blob-complete", {
