@@ -162,6 +162,7 @@ export async function POST(request: Request, context: RouteContext) {
       const size = Number(body.size);
       if (
         !body.filename ||
+        !body.filename.toLowerCase().endsWith(".pdf") ||
         !Number.isSafeInteger(size) ||
         size <= 0 ||
         size > MAX_UPLOAD_BYTES
@@ -171,10 +172,37 @@ export async function POST(request: Request, context: RouteContext) {
           { status: 400 },
         );
       }
+      const { data: bucket } = await database.storage
+        .getBucket("electoral-roll-pdfs")
+        .catch(() => ({ data: null }));
+      if (!bucket) {
+        const { error: bucketError } = await database.storage.createBucket(
+          "electoral-roll-pdfs",
+          { public: false, fileSizeLimit: `${MAX_UPLOAD_BYTES}` },
+        );
+        if (bucketError && !/already exists/i.test(bucketError.message)) {
+          console.error(
+            "[Upload] Could not initialize Supabase bucket",
+            bucketError,
+          );
+          return NextResponse.json(
+            { error: `Storage bucket is unavailable: ${bucketError.message}` },
+            { status: 503 },
+          );
+        }
+      }
       const storagePath = `uploads/${randomUUID()}.pdf`;
-      const { data, error } = await database.storage
-        .from("electoral-roll-pdfs")
-        .createSignedUploadUrl(storagePath, { upsert: false });
+      let data: { token: string } | null = null;
+      let error: Error | null = null;
+      try {
+        const result = await database.storage
+          .from("electoral-roll-pdfs")
+          .createSignedUploadUrl(storagePath, { upsert: false });
+        data = result.data;
+        error = result.error;
+      } catch (caught) {
+        error = caught instanceof Error ? caught : new Error(String(caught));
+      }
       if (error || !data)
         return NextResponse.json(
           {
