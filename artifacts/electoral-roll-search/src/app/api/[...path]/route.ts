@@ -41,10 +41,9 @@ function errorResponse(error: unknown) {
       { status: 400 },
     );
   }
-  return NextResponse.json(
-    { error: "The server could not complete the request" },
-    { status: 500 },
-  );
+  const message =
+    error instanceof Error ? error.message : "Unknown server error";
+  return NextResponse.json({ error: message }, { status: 500 });
 }
 
 async function routePath(context: RouteContext) {

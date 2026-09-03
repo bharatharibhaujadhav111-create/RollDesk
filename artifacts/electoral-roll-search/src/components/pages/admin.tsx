@@ -359,8 +359,8 @@ export default function AdminPage() {
     assetsQuery.isError &&
     (assetsQuery.error as { status?: number } | null)?.status === 404;
 
-  function uploadFile(file?: File) {
-    if (!file) return;
+  async function uploadFile(file?: File) {
+    if (!file) return false;
     setUploadError("");
     setNotice("");
     if (
@@ -368,29 +368,26 @@ export default function AdminPage() {
       !file.name.toLowerCase().endsWith(".pdf")
     ) {
       setUploadError("Please choose a PDF file.");
-      return;
+      return false;
     }
-    uploadPdf.mutate(
-      { data: file, params: { filename: file.name, village } },
-      {
-        onSuccess: () => {
-          setNotice(`${file.name} uploaded. Indexing has started.`);
-          queryClient.invalidateQueries({
-            queryKey: getListPdfAssetsQueryKey(),
-          });
-          queryClient.invalidateQueries({
-            queryKey: getGetAdminStatsQueryKey(),
-          });
-        },
-        onError: () =>
-          setUploadError(
-            "Upload could not be completed. Check the file and try again.",
-          ),
-      },
-    );
+    try {
+      await uploadPdf.mutateAsync({
+        data: file,
+        params: { filename: file.name, village },
+      });
+      setNotice(`${file.name} uploaded. Indexing has started.`);
+      queryClient.invalidateQueries({ queryKey: getListPdfAssetsQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });
+      return true;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Unknown upload error";
+      setUploadError(`Upload failed: ${message}`);
+      return false;
+    }
   }
 
-  function uploadFiles(files: FileList | null) {
+  async function uploadFiles(files: FileList | null) {
     if (!files?.length) return;
     const selected = Array.from(files);
     const invalid = selected.find(
@@ -402,7 +399,11 @@ export default function AdminPage() {
       setUploadError(`${invalid.name} is not a PDF file.`);
       return;
     }
-    selected.forEach((file) => uploadFile(file));
+    for (const file of selected) {
+      const uploaded = await uploadFile(file);
+      if (!uploaded) break;
+    }
+    if (inputRef.current) inputRef.current.value = "";
   }
 
   function rebuild() {

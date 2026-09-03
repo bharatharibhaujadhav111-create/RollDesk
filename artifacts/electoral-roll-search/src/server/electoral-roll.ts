@@ -931,6 +931,7 @@ export async function addPdf(
   const filePath = path.join(pdfDirectory, `${safeId}.pdf`);
   const temporaryPath = `${filePath}.uploading`;
   await fs.writeFile(temporaryPath, data);
+  await fs.rm(filePath, { force: true });
   await fs.rename(temporaryPath, filePath);
   await fs.writeFile(path.join(pdfDirectory, `${safeId}.label`), safeName);
   villageAssignments[safeId] = villageId;
