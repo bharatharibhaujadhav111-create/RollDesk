@@ -21,7 +21,7 @@ import {
   removePdf,
   renamePdf,
   searchIndex,
-} from "@workspace/api-server/lib/electoral-roll";
+} from "@/server/electoral-roll";
 
 export const runtime = "nodejs";
 

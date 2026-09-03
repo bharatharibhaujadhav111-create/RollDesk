@@ -4,10 +4,9 @@ Fast public search over locally managed electoral-roll PDFs, with an administrat
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server
-- `pnpm --filter @workspace/electoral-roll-search run dev` — run the web app
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
+- `pnpm --filter @workspace/electoral-roll-search run dev` — run the Next.js web app and API routes
+- `pnpm run typecheck` — typecheck the Next.js app
+- `pnpm run build` — build the Next.js app for deployment
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - PDFs are stored in `./pdfs`; the persistent searchable metadata index is `./pdf-index.json` and its health state is `./pdf-index-state.json`
 - No database or authentication is used by design. The admin route is intentionally unauthenticated per product requirements.
@@ -15,18 +14,17 @@ Fast public search over locally managed electoral-roll PDFs, with an administrat
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
+- API: Next.js route handlers
 - Validation: generated Zod schemas
 - API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
-- Frontend: React + Vite + TanStack Query + Wouter
+- Build: Next.js
+- Frontend: React + Next.js + TanStack Query
 
 ## Where things live
 
 - `artifacts/electoral-roll-search/src/pages/search.tsx` — public search experience
 - `artifacts/electoral-roll-search/src/pages/admin.tsx` — PDF management and index health
-- `artifacts/api-server/src/lib/electoral-roll.ts` — filesystem storage, query parser, fuzzy ranking, and index lifecycle
-- `artifacts/api-server/src/routes/electoral-roll.ts` — search, PDF, and admin endpoints
+- `artifacts/electoral-roll-search/src/server/electoral-roll.ts` — filesystem storage, query parser, fuzzy ranking, and index lifecycle
 - `lib/api-spec/openapi.yaml` — API source of truth
 
 ## Architecture decisions
@@ -50,7 +48,7 @@ No additional preferences recorded.
 
 - The admin route has no authentication because the requested product explicitly requires no login. Add access control before exposing it publicly.
 - PDF text extraction uses `pdftotext` when available and falls back to `pdftoppm` + Tesseract OCR for image-only pages. Text-based electoral PDFs can be indexed using pipe-delimited or comma-delimited rows.
-- Vite build requires workflow-provided `PORT` and `BASE_PATH`; use the managed web workflow instead of invoking a bare build without those variables.
+- Next.js development runs on port `5173`; do not run a production build concurrently with `next dev` because both use `.next`.
 
 ## Pointers
 

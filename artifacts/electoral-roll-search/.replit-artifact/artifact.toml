@@ -16,12 +16,7 @@ run = "pnpm --filter @workspace/electoral-roll-search run dev"
 
 [services.production]
 build = [ "pnpm", "--filter", "@workspace/electoral-roll-search", "run", "build" ]
-serve = "static"
-publicDir = "artifacts/electoral-roll-search/dist/public"
-
-[[services.production.rewrites]]
-from = "/*"
-to = "/index.html"
+run = [ "pnpm", "--filter", "@workspace/electoral-roll-search", "run", "start" ]
 
 [services.env]
 PORT = "22996"

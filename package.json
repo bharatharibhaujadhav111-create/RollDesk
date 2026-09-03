@@ -5,9 +5,8 @@
   "scripts": {
     "preinstall": "node scripts/preinstall.cjs",
     "dev": "node scripts/dev.cjs",
-    "build": "pnpm run typecheck && pnpm -r --if-present run build",
-    "typecheck:libs": "tsc --build",
-    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
+    "build": "pnpm --filter @workspace/electoral-roll-search build",
+    "typecheck": "pnpm --filter @workspace/electoral-roll-search typecheck"
   },
   "private": true,
   "dependencies": {
