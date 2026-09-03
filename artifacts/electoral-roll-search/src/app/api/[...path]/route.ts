@@ -165,15 +165,8 @@ export async function POST(request: Request, context: RouteContext) {
           { status: 503 },
         );
       }
-      if (!process.env.BLOB_WEBHOOK_PUBLIC_KEY) {
-        return NextResponse.json(
-          {
-            error:
-              "Vercel Blob webhook key is not configured. Add BLOB_WEBHOOK_PUBLIC_KEY to this deployment.",
-          },
-          { status: 503 },
-        );
-      }
+      // BLOB_WEBHOOK_PUBLIC_KEY is optional (only needed on Pro plan for webhook verification)
+      // Free tier users don't need it for basic uploads
       let body: Parameters<typeof handleUpload>[0]["body"];
       try {
         const parsed = (await request.json()) as Record<string, unknown>;
@@ -211,18 +204,6 @@ export async function POST(request: Request, context: RouteContext) {
       } catch (err) {
         console.error("handleUpload error:", err);
         const errorMessage = err instanceof Error ? err.message : String(err);
-        if (
-          errorMessage.includes("webhook") ||
-          errorMessage.includes("BLOB_WEBHOOK")
-        ) {
-          return NextResponse.json(
-            {
-              error:
-                "Vercel Blob webhook key is not configured. Add BLOB_WEBHOOK_PUBLIC_KEY to this deployment.",
-            },
-            { status: 503 },
-          );
-        }
         return NextResponse.json(
           { error: `Blob upload failed: ${errorMessage}` },
           { status: 502 },
