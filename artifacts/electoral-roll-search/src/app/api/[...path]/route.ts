@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { after, NextResponse } from "next/server";
 import {
   DeletePdfParams,
@@ -32,7 +32,6 @@ import { getSupabaseAdmin, isSupabaseEnabled } from "@/server/supabase";
 export const runtime = "nodejs";
 
 type RouteContext = { params: Promise<{ path: string[] }> };
-const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 function scheduleIndexing() {
   if (!isSupabaseEnabled()) return;
@@ -144,34 +143,6 @@ export async function POST(request: Request, context: RouteContext) {
 
   try {
     if (
-      segments.length === 3 &&
-      segments[0] === "admin" &&
-      segments[1] === "upload" &&
-      segments[2] === "signed-url"
-    ) {
-      return NextResponse.json(
-        {
-          error:
-            "Large PDF uploads are disabled in this build. Send the file directly to /api/admin/pdfs instead.",
-        },
-        { status: 501 },
-      );
-    }
-    if (
-      segments.length === 3 &&
-      segments[0] === "admin" &&
-      segments[1] === "upload" &&
-      segments[2] === "complete"
-    ) {
-      return NextResponse.json(
-        {
-          error:
-            "Large PDF completion handling is disabled in this build. Upload directly to /api/admin/pdfs instead.",
-        },
-        { status: 501 },
-      );
-    }
-    if (
       segments.length === 2 &&
       segments[0] === "admin" &&
       segments[1] === "pdfs"
@@ -184,20 +155,7 @@ export async function POST(request: Request, context: RouteContext) {
           { status: 400 },
         );
       }
-      const contentLength = Number(request.headers.get("content-length"));
-      if (Number.isFinite(contentLength) && contentLength > MAX_UPLOAD_BYTES) {
-        return NextResponse.json(
-          { error: "The uploaded file is too large" },
-          { status: 413 },
-        );
-      }
       const buffer = Buffer.from(await request.arrayBuffer());
-      if (buffer.length > MAX_UPLOAD_BYTES) {
-        return NextResponse.json(
-          { error: "The uploaded file is too large" },
-          { status: 413 },
-        );
-      }
       if (buffer.length < 5 || buffer.subarray(0, 5).toString() !== "%PDF-") {
         return NextResponse.json(
           { error: "The uploaded file is not a valid PDF" },
