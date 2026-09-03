@@ -4,9 +4,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { del, get, put } from "@vercel/blob";
+import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { getSupabaseAdmin } from "@/server/supabase";
 
 const execFileAsync = promisify(execFile);
+
 const serviceRoot = path.resolve(process.cwd());
 const projectRoot = path.resolve(serviceRoot, "../..");
 const storageRoot = process.env.VERCEL
@@ -1064,8 +1066,12 @@ async function readJson<T>(filePath: string): Promise<T> {
 }
 
 async function getPageCount(filePath: string) {
-  const info = await execFileAsync("pdfinfo", [filePath]);
-  return Number(info.stdout.match(/^Pages:\s+(\d+)/m)?.[1] || 1);
+  const document = await getDocument(filePath).promise;
+  try {
+    return document.numPages;
+  } finally {
+    await document.destroy();
+  }
 }
 
 async function refreshDatabaseRecords() {
