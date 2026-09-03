@@ -289,6 +289,15 @@ export default function AdminPage() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const [notice, setNotice] = useState("");
+  const [uploadProgress, setUploadProgress] = useState<{
+    file: string;
+    percent: number;
+    loadedMB: number;
+    totalMB: number;
+  } | null>(null);
+
+  const MAX_UPLOAD_MB = 500;
+  const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 
   useEffect(() => {
     fetch("/api/villages")
@@ -355,6 +364,7 @@ export default function AdminPage() {
     if (!file) return false;
     setUploadError("");
     setNotice("");
+    setUploadProgress(null);
     if (
       file.type !== "application/pdf" &&
       !file.name.toLowerCase().endsWith(".pdf")
@@ -362,35 +372,113 @@ export default function AdminPage() {
       setUploadError("Please choose a PDF file.");
       return false;
     }
+    if (file.size < 5) {
+      setUploadError(`${file.name} is empty and cannot be uploaded.`);
+      return false;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setUploadError(
+        `${file.name} is ${(file.size / (1024 * 1024)).toFixed(1)} MB. The upload limit is ${MAX_UPLOAD_MB} MB per PDF.`,
+      );
+      return false;
+    }
+    const header = await new Promise<Uint8Array | null>((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        if (reader.error) resolve(null);
+        else resolve(new Uint8Array(reader.result as ArrayBuffer));
+      };
+      reader.onerror = () => resolve(null);
+      reader.readAsArrayBuffer(file.slice(0, 5));
+    });
+    if (
+      !header ||
+      header.length < 5 ||
+      String.fromCharCode(...Array.from(header.slice(0, 5))) !== "%PDF-"
+    ) {
+      setUploadError(
+        `${file.name} does not start with the %PDF- magic header. Is this a real PDF?`,
+      );
+      return false;
+    }
     try {
       const uploadName = `${Date.now()}-${crypto.randomUUID()}-${file.name}`;
-      console.log("[PDF Upload] Simple direct upload:", {
+      const url = `/api/admin/pdfs?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`;
+      const totalMB = file.size / (1024 * 1024);
+      setUploadProgress({
+        file: file.name,
+        percent: 0,
+        loadedMB: 0,
+        totalMB,
+      });
+      console.log("[PDF Upload] Direct stream upload:", {
         uploadName,
         size: file.size,
+        sizeMB: totalMB.toFixed(2),
       });
-
-      const response = await fetch(
-        `/api/admin/pdfs?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/pdf" },
-          body: file,
+      const result = await new Promise<{ ok: boolean; body: unknown; status: number; statusText: string }>(
+        (resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", url, true);
+          xhr.setRequestHeader("Content-Type", "application/pdf");
+          xhr.setRequestHeader("X-PDF-Size", String(file.size));
+          xhr.responseType = "json";
+          xhr.upload.onprogress = (event) => {
+            if (!event.lengthComputable) return;
+            const percent = event.total
+              ? Math.round((event.loaded / event.total) * 100)
+              : 0;
+            setUploadProgress({
+              file: file.name,
+              percent,
+              loadedMB: event.loaded / (1024 * 1024),
+              totalMB,
+            });
+          };
+          xhr.upload.onerror = () =>
+            reject(new Error("Network error while sending the PDF."));
+          xhr.onerror = () =>
+            reject(new Error("Upload failed. Check your network and retry."));
+          xhr.onload = () => {
+            const body = xhr.response ?? null;
+            resolve({
+              ok: xhr.status >= 200 && xhr.status < 300,
+              body,
+              status: xhr.status,
+              statusText: xhr.statusText,
+            });
+          };
+          try {
+            xhr.send(file);
+          } catch (sendError) {
+            reject(sendError);
+          }
         },
       );
-
-      if (!response.ok) {
-        const data = (await response.json().catch(() => null)) as {
-          error?: string;
-        } | null;
+      if (!result.ok) {
+        const data = (result.body ?? null) as { error?: string } | null;
+        if (result.status === 413) {
+          console.error("[PDF Upload] Server rejected payload as too large:", {
+            status: 413,
+            size: file.size,
+          });
+          throw new Error(
+            `HTTP 413: The PDF exceeded the server body limit (${totalMB.toFixed(1)} MB sent). Try a smaller file or ask an administrator to raise the upload limit.`,
+          );
+        }
         console.error("[PDF Upload] upload failed:", {
-          status: response.status,
+          status: result.status,
           error: data?.error,
         });
-        throw new Error(data?.error || `HTTP ${response.status}`);
+        throw new Error(data?.error || `HTTP ${result.status}`);
       }
-
-      const result = await response.json();
-      console.log("[PDF Upload] Success:", result);
+      console.log("[PDF Upload] Success:", result.body);
+      setUploadProgress({
+        file: file.name,
+        percent: 100,
+        loadedMB: totalMB,
+        totalMB,
+      });
       setNotice(`${file.name} uploaded successfully. Indexing started.`);
       queryClient.invalidateQueries({ queryKey: getListPdfAssetsQueryKey() });
       queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });
@@ -405,6 +493,8 @@ export default function AdminPage() {
       console.error("[PDF Upload] Fatal error:", message);
       setUploadError(`Upload failed: ${message}`);
       return false;
+    } finally {
+      setTimeout(() => setUploadProgress(null), 1500);
     }
   }
 
@@ -756,6 +846,27 @@ export default function AdminPage() {
             >
               <Upload size={14} /> Choose PDFs
             </button>
+          </div>
+        ) : null}
+        {uploadProgress ? (
+          <div
+            className="mb-4 rounded-lg border border-accent/30 bg-accent/5 px-4 py-3 text-sm"
+            data-testid="upload-progress"
+          >
+            <div className="flex items-center justify-between text-xs font-bold text-primary">
+              <span className="truncate pr-3">{uploadProgress.file}</span>
+              <span className="font-mono-app text-accent">
+                {uploadProgress.loadedMB.toFixed(1)} /{" "}
+                {uploadProgress.totalMB.toFixed(1)} MB (
+                {uploadProgress.percent}%)
+              </span>
+            </div>
+            <div className="mt-2 h-2 overflow-hidden rounded-full bg-secondary">
+              <div
+                className="h-full rounded-full bg-accent transition-all"
+                style={{ width: `${uploadProgress.percent}%` }}
+              />
+            </div>
           </div>
         ) : null}
         {(uploadError || notice) && (

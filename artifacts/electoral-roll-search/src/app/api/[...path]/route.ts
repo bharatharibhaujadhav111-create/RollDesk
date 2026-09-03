@@ -13,6 +13,7 @@ import {
 } from "@workspace/api-zod/generated/api";
 import {
   addPdf,
+  addPdfFromStream,
   downloadPdf,
   ensureStorage,
   getIndexState,
@@ -30,6 +31,18 @@ import {
 import { getSupabaseAdmin, isSupabaseEnabled } from "@/server/supabase";
 
 export const runtime = "nodejs";
+
+export const maxDuration = 300;
+
+export const dynamic = "force-dynamic";
+
+export const preferredRegion = "auto";
+
+export const fetchCache = "force-no-store";
+
+export const bodySizeLimit = 500 * 1024 * 1024;
+
+export const revalidate = 0;
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 
@@ -171,15 +184,40 @@ export async function POST(request: Request, context: RouteContext) {
           { status: 400 },
         );
       }
-      const buffer = Buffer.from(await request.arrayBuffer());
-      if (buffer.length < 5 || buffer.subarray(0, 5).toString() !== "%PDF-") {
+      if (!request.body) {
         return NextResponse.json(
-          { error: "The uploaded file is not a valid PDF" },
+          { error: "No PDF data received. Please choose a PDF file and retry." },
           { status: 400 },
         );
       }
+      const declaredSize = Number(request.headers.get("x-pdf-size") || 0);
       const id = `roll-${randomUUID()}`;
-      const asset = await addPdf(id, params.filename, buffer, village.id);
+      console.log("[PDF Upload] Streaming upload started:", {
+        id,
+        filename: params.filename,
+        village: village.id,
+        declaredSize,
+        contentLength: request.headers.get("content-length"),
+      });
+      const reader = request.body.getReader();
+      const stream = (async function* bodyToBytes() {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value?.length) yield value;
+        }
+      })();
+      const asset = await addPdfFromStream(
+        id,
+        params.filename,
+        stream,
+        village.id,
+      );
+      console.log("[PDF Upload] Streaming upload finished:", {
+        id,
+        savedAs: asset?.id,
+        sizeBytes: asset?.sizeBytes,
+      });
       scheduleIndexing();
       return NextResponse.json(asset, { status: 201 });
     }

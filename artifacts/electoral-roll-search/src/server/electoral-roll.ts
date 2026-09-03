@@ -1,8 +1,12 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
+import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
 import path from "node:path";
 import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { getSupabaseAdmin } from "@/server/supabase";
 
@@ -18,6 +22,11 @@ export const pdfDirectory = process.env.ELECTORAL_ROLL_PDF_DIR
   : process.env.VERCEL
     ? path.join(tmpdir(), "electoral-roll-pdfs")
     : path.join(projectRoot, "pdfs");
+export const chunkDirectory = process.env.ELECTORAL_ROLL_CHUNK_DIR
+  ? path.resolve(process.env.ELECTORAL_ROLL_CHUNK_DIR)
+  : process.env.VERCEL
+    ? path.join(tmpdir(), "electoral-roll-chunks")
+    : path.join(projectRoot, "chunks");
 const indexPath = path.join(storageRoot, "pdf-index.json");
 const statePath = path.join(storageRoot, "pdf-index-state.json");
 const villagePath = path.join(storageRoot, "pdf-villages.json");
@@ -1131,6 +1140,7 @@ async function refreshDatabaseRecords(force = false) {
 export async function ensureStorage() {
   if (initialized) return;
   await fs.mkdir(pdfDirectory, { recursive: true });
+  await fs.mkdir(chunkDirectory, { recursive: true });
   await fs.mkdir(storageRoot, { recursive: true });
   let indexWasMissing = false;
   try {
@@ -1543,6 +1553,89 @@ export async function addPdf(
       name: safeName,
       villageId,
       sizeBytes: data.length,
+      storagePath: storagePathLocal,
+    });
+    return (await listPdfs()).find((pdf) => pdf.id === safeId);
+  } catch (error) {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+    await fs.rm(filePath, { force: true }).catch(() => undefined);
+    await fs.rm(labelPath, { force: true }).catch(() => undefined);
+    if (hadVillageAssignment) villageAssignments[safeId] = previousVillage;
+    else delete villageAssignments[safeId];
+    await writeJson(villagePath, villageAssignments).catch(() => undefined);
+    throw error;
+  }
+}
+
+export async function addPdfFromStream(
+  id: string,
+  fileName: string,
+  stream: Readable | AsyncIterable<Uint8Array>,
+  villageId = DEFAULT_VILLAGE_ID,
+) {
+  await ensureStorage();
+  const baseId = id.replace(/[^a-z0-9-]/gi, "-").toLowerCase() || "roll";
+  const database = getSupabaseAdmin();
+  if (database) {
+    const { data: existing, error: existingError } = await database
+      .from("pdf_assets")
+      .select("id")
+      .eq("id", baseId)
+      .maybeSingle();
+    if (existingError)
+      throw new Error(
+        `Could not check existing PDF asset: ${existingError.message}`,
+      );
+    if (existing) return (await listPdfs()).find((pdf) => pdf.id === baseId);
+  }
+  let safeId = baseId;
+  let suffix = 2;
+  while (
+    await fs
+      .access(path.join(pdfDirectory, `${safeId}.pdf`))
+      .then(() => true)
+      .catch(() => false)
+  ) {
+    safeId = `${baseId}-${suffix++}`;
+  }
+  const baseName = path.basename(fileName).trim() || `${safeId}.pdf`;
+  const safeName = baseName.toLowerCase().endsWith(".pdf")
+    ? baseName
+    : `${baseName}.pdf`;
+  const filePath = path.join(pdfDirectory, `${safeId}.pdf`);
+  const temporaryPath = `${filePath}.uploading`;
+  const labelPath = path.join(pdfDirectory, `${safeId}.label`);
+  const hadVillageAssignment = Object.prototype.hasOwnProperty.call(
+    villageAssignments,
+    safeId,
+  );
+  const previousVillage = villageAssignments[safeId];
+  try {
+    const input =
+      stream instanceof Readable ? stream : Readable.from(stream as AsyncIterable<Uint8Array>);
+    await pipeline(input, fsSync.createWriteStream(temporaryPath));
+    const stats = await fs.stat(temporaryPath);
+    const headBuffer = Buffer.alloc(5);
+    const fd = await fs.open(temporaryPath, "r");
+    const headRead = await fd.read(headBuffer, 0, 5, 0);
+    await fd.close();
+    if (
+      stats.size < 5 ||
+      headRead.bytesRead < 5 ||
+      headBuffer.toString() !== "%PDF-"
+    ) {
+      throw new Error("The uploaded file is not a valid PDF");
+    }
+    await fs.rename(temporaryPath, filePath);
+    await fs.writeFile(labelPath, safeName);
+    villageAssignments[safeId] = villageId;
+    await writeJson(villagePath, villageAssignments);
+    const storagePathLocal = path.join(pdfDirectory, `${safeId}.pdf`);
+    await createDatabaseJob({
+      id: safeId,
+      name: safeName,
+      villageId,
+      sizeBytes: stats.size,
       storagePath: storagePathLocal,
     });
     return (await listPdfs()).find((pdf) => pdf.id === safeId);
