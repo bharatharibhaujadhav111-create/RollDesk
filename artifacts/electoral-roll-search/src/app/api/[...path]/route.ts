@@ -12,7 +12,6 @@ import {
   UploadPdfQueryParams,
 } from "@workspace/api-zod/generated/api";
 import {
-  addPdf,
   addPdfFromStream,
   downloadPdf,
   ensureStorage,
@@ -36,13 +35,7 @@ export const maxDuration = 300;
 
 export const dynamic = "force-dynamic";
 
-export const preferredRegion = "auto";
-
 export const fetchCache = "force-no-store";
-
-export const bodySizeLimit = 500 * 1024 * 1024;
-
-export const revalidate = 0;
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 
