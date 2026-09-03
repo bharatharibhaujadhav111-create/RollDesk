@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { get, put } from "@vercel/blob";
+import { del, get, put } from "@vercel/blob";
 import { getSupabaseAdmin } from "@/server/supabase";
 
 const execFileAsync = promisify(execFile);
@@ -1566,8 +1566,18 @@ export async function renamePdf(id: string, name: string) {
 
 export async function removePdf(id: string) {
   await ensureStorage();
+  const database = getSupabaseAdmin();
+  if (process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN) {
+    await del(`pdfs/${id}.pdf`);
+  }
+  if (database) {
+    const { error } = await database.from("pdf_assets").delete().eq("id", id);
+    if (error) throw new Error(`Could not delete PDF asset: ${error.message}`);
+  }
   await fs.rm(path.join(pdfDirectory, `${id}.pdf`), { force: true });
   await fs.rm(path.join(pdfDirectory, `${id}.label`), { force: true });
+  delete villageAssignments[id];
+  await writeJson(villagePath, villageAssignments);
   records = records.filter((record) => record.pdfId !== id);
   rebuildSearchDocuments();
   await writeJson(indexPath, records);

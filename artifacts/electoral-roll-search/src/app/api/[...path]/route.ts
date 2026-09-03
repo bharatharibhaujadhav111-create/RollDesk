@@ -27,6 +27,7 @@ import {
   searchIndex,
   VILLAGES,
 } from "@/server/electoral-roll";
+import { isSupabaseEnabled } from "@/server/supabase";
 
 export const runtime = "nodejs";
 
@@ -34,6 +35,7 @@ type RouteContext = { params: Promise<{ path: string[] }> };
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 function scheduleIndexing() {
+  if (!isSupabaseEnabled()) return;
   after(async () => {
     try {
       await processQueuedJobs(1);
