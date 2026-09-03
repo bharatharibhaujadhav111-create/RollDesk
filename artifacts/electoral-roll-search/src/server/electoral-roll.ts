@@ -16,7 +16,7 @@ export const pdfDirectory = process.env.ELECTORAL_ROLL_PDF_DIR
 const indexPath = path.join(projectRoot, "pdf-index.json");
 const statePath = path.join(projectRoot, "pdf-index-state.json");
 const villagePath = path.join(projectRoot, "pdf-villages.json");
-const INDEX_FORMAT_VERSION = 4;
+const INDEX_FORMAT_VERSION = 5;
 export const VILLAGES = [
   { id: "akolekati", name: "Akolekati", nameMr: "अकोलेकाटी" },
   { id: "banegaon", name: "Banegaon", nameMr: "बाणेगाव" },
@@ -117,6 +117,23 @@ let state: IndexState = {
 let initialized = false;
 let rebuildRequested = false;
 
+type SearchDocument = {
+  record: RollRecord;
+  voterName: string;
+  relativeName: string;
+  epicNumber: string;
+};
+let searchDocuments: SearchDocument[] = [];
+
+function rebuildSearchDocuments() {
+  searchDocuments = records.map((record) => ({
+    record,
+    voterName: clean(record.voterName),
+    relativeName: clean(record.relativeName),
+    epicNumber: clean(record.epicNumber ?? ""),
+  }));
+}
+
 function clean(value: string) {
   return value
     .toLowerCase()
@@ -196,6 +213,23 @@ function wordScore(query: string, target: string) {
     }, 0);
     return best;
   });
+  return scores.reduce((sum, value) => sum + value, 0) / scores.length;
+}
+
+function normalizedWordScore(query: string, target: string) {
+  if (!query || !target) return 0;
+  if (target === query) return 1;
+  if (target.includes(query)) return 0.96;
+  const qWords = query.split(" ");
+  const tWords = target.split(" ");
+  const scores = qWords.map((part) =>
+    tWords.reduce((current, targetWord) => {
+      const distance = editDistance(part, targetWord);
+      const fuzzy = 1 - distance / Math.max(part.length, targetWord.length);
+      const phonetic = soundex(part) === soundex(targetWord) ? 0.78 : 0;
+      return Math.max(current, fuzzy, phonetic);
+    }, 0),
+  );
   return scores.reduce((sum, value) => sum + value, 0) / scores.length;
 }
 
@@ -748,6 +782,7 @@ export async function ensureStorage() {
     await writeJson(statePath, state);
   }
   initialized = true;
+  rebuildSearchDocuments();
   const files = (await fs.readdir(pdfDirectory)).filter((file) =>
     file.toLowerCase().endsWith(".pdf"),
   );
@@ -840,20 +875,26 @@ export async function searchIndex(
 ) {
   await ensureStorage();
   const filters = parseSearchQuery(query);
+  const normalizedName = clean(filters.name ?? "");
+  const normalizedRelativeName = clean(filters.relativeName ?? "");
+  const normalizedEpic = clean(filters.epicNumber ?? "");
   const scopedRecords =
     villageId === "all"
-      ? records
-      : records.filter((record) => villageForPdf(record.pdfId) === villageId);
+      ? searchDocuments
+      : searchDocuments.filter(
+          ({ record }) => villageForPdf(record.pdfId) === villageId,
+        );
   const scored = scopedRecords
-    .map((record) => {
-      const nameScore = filters.name
-        ? wordScore(filters.name, record.voterName)
+    .map((document) => {
+      const { record } = document;
+      const nameScore = normalizedName
+        ? normalizedWordScore(normalizedName, document.voterName)
         : 0;
-      const relativeScore = filters.relativeName
-        ? wordScore(filters.relativeName, record.relativeName)
+      const relativeScore = normalizedRelativeName
+        ? normalizedWordScore(normalizedRelativeName, document.relativeName)
         : 0;
-      const epicScore = filters.epicNumber
-        ? clean(record.epicNumber ?? "").includes(clean(filters.epicNumber))
+      const epicScore = normalizedEpic
+        ? document.epicNumber.includes(normalizedEpic)
           ? 1
           : 0
         : 0;
@@ -894,15 +935,17 @@ export async function searchIndex(
 export async function getSuggestions(query: string) {
   await ensureStorage();
   const normalized = clean(query);
+  if (normalized.length < 2) return [];
   const values = new Map<
     string,
     { label: string; value: string; kind: string }
   >();
-  for (const record of records) {
+  for (const document of searchDocuments) {
+    const { record } = document;
     if (
-      clean(record.voterName).includes(normalized) ||
-      clean(record.relativeName).includes(normalized) ||
-      clean(record.epicNumber ?? "").includes(normalized)
+      document.voterName.includes(normalized) ||
+      document.relativeName.includes(normalized) ||
+      document.epicNumber.includes(normalized)
     ) {
       values.set(record.voterName, {
         label: record.voterName,
@@ -916,6 +959,7 @@ export async function getSuggestions(query: string) {
           kind: "EPIC number",
         });
     }
+    if (values.size >= 12) break;
   }
   return Array.from(values.values()).slice(0, 6);
 }
@@ -927,14 +971,24 @@ export async function addPdf(
   villageId = DEFAULT_VILLAGE_ID,
 ) {
   await ensureStorage();
-  const safeId = id.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
-  const safeName = fileName.toLowerCase().endsWith(".pdf")
-    ? fileName
-    : `${fileName}.pdf`;
+  const baseId = id.replace(/[^a-z0-9-]/gi, "-").toLowerCase() || "roll";
+  let safeId = baseId;
+  let suffix = 2;
+  while (
+    await fs
+      .access(path.join(pdfDirectory, `${safeId}.pdf`))
+      .then(() => true)
+      .catch(() => false)
+  ) {
+    safeId = `${baseId}-${suffix++}`;
+  }
+  const baseName = path.basename(fileName).trim() || `${safeId}.pdf`;
+  const safeName = baseName.toLowerCase().endsWith(".pdf")
+    ? baseName
+    : `${baseName}.pdf`;
   const filePath = path.join(pdfDirectory, `${safeId}.pdf`);
   const temporaryPath = `${filePath}.uploading`;
   await fs.writeFile(temporaryPath, data);
-  await fs.rm(filePath, { force: true });
   await fs.rename(temporaryPath, filePath);
   if (process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN) {
     await put(`pdfs/${safeId}.pdf`, data, {
@@ -964,9 +1018,9 @@ export async function renamePdf(id: string, name: string) {
     records = records.map((record) =>
       record.pdfId === id ? { ...record, pdfName: safeName } : record,
     );
+    rebuildSearchDocuments();
     await writeJson(indexPath, records);
   }
-  void rebuildIndex();
   return item;
 }
 
@@ -975,8 +1029,8 @@ export async function removePdf(id: string) {
   await fs.rm(path.join(pdfDirectory, `${id}.pdf`), { force: true });
   await fs.rm(path.join(pdfDirectory, `${id}.label`), { force: true });
   records = records.filter((record) => record.pdfId !== id);
+  rebuildSearchDocuments();
   await writeJson(indexPath, records);
-  void rebuildIndex();
 }
 
 export async function rebuildIndex() {
@@ -1013,20 +1067,16 @@ export async function rebuildIndex() {
       pageCounts.reduce((sum, count) => sum + count, 0),
     );
     let processedPages = 0;
-    let persistence = Promise.resolve();
-    const persist = (includeIndex: boolean) => {
-      const recordsSnapshot = records;
-      const stateSnapshot = state;
-      persistence = persistence.then(async () => {
-        if (includeIndex) await writeJson(indexPath, recordsSnapshot);
-        await writeJson(statePath, stateSnapshot);
-      });
-      return persistence;
-    };
+    const indexedRecords = new Map<string, RollRecord[]>();
+    const existingByPdf = new Map<string, RollRecord[]>();
+    for (const record of records) {
+      const existing = existingByPdf.get(record.pdfId) ?? [];
+      existing.push(record);
+      existingByPdf.set(record.pdfId, existing);
+    }
     const indexFile = async (file: string, fileIndex: number) => {
       const id = path.basename(file, ".pdf");
       let parsedForPdf: RollRecord[] = [];
-      let replacedExistingRecords = false;
       try {
         await extractPdfPages(path.join(pdfDirectory, file), async (page) => {
           if (page.usedOcr) ocrPages += 1;
@@ -1038,33 +1088,26 @@ export async function rebuildIndex() {
             page.epicText,
           );
           parsedForPdf = [...parsedForPdf, ...parsed];
-          const unique = Array.from(
-            new Map(parsedForPdf.map((record) => [record.id, record])).values(),
-          );
-          if (unique.length > 0 && !replacedExistingRecords) {
-            records = records.filter((record) => record.pdfId !== id);
-            replacedExistingRecords = true;
-          }
-          if (replacedExistingRecords) {
-            records = [
-              ...records.filter((record) => record.pdfId !== id),
-              ...unique,
-            ];
-          }
           processedPages += 1;
           state = {
             ...state,
-            totalRecords: records.length,
             progress: Math.min(
               95,
               Math.round((processedPages / totalPages) * 90) + 5,
             ),
             ocrPages,
           };
-          await persist(replacedExistingRecords);
         });
-        if (parsedForPdf.length === 0)
+        const unique = Array.from(
+          new Map(parsedForPdf.map((record) => [record.id, record])).values(),
+        );
+        if (unique.length === 0) {
           warnings.push(`${file}: no voter records could be recognized`);
+          // Preserve a previously usable index when a new extraction is empty.
+          if (existingByPdf.has(id)) indexedRecords.set(id, existingByPdf.get(id)!);
+        } else {
+          indexedRecords.set(id, unique);
+        }
         indexedPdfs += 1;
       } catch (error) {
         const message =
@@ -1081,10 +1124,10 @@ export async function rebuildIndex() {
           failedPdfs += 1;
           warnings.push(`${file}: ${message}`);
         }
+        if (existingByPdf.has(id)) indexedRecords.set(id, existingByPdf.get(id)!);
       }
       state = {
         ...state,
-        totalRecords: records.length,
         progress: Math.max(
           state.progress,
           Math.round(((fileIndex + 1) / Math.max(files.length, 1)) * 90) + 5,
@@ -1094,10 +1137,24 @@ export async function rebuildIndex() {
         ocrPages,
         warnings,
       };
-      await persist(replacedExistingRecords);
     };
-    await Promise.all(files.map((file, index) => indexFile(file, index)));
-    await persistence;
+    // OCR is CPU and memory intensive. A small worker pool is consistently faster
+    // than launching every PDF at once, and prevents competing rebuilds from losing data.
+    const workerCount = Math.min(2, files.length);
+    let nextFile = 0;
+    await Promise.all(
+      Array.from({ length: workerCount }, async () => {
+        while (nextFile < files.length) {
+          const fileIndex = nextFile++;
+          await indexFile(files[fileIndex], fileIndex);
+        }
+      }),
+    );
+    records = [
+      ...records.filter((record) => !files.includes(`${record.pdfId}.pdf`)),
+      ...Array.from(indexedRecords.values()).flat(),
+    ];
+    rebuildSearchDocuments();
     state = {
       ...state,
       totalPdfs: files.length,
