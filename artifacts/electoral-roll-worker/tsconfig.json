@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "@/*": ["../electoral-roll-search/src/*"],
+      "@workspace/api-zod/*": ["../../lib/api-zod/src/*"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

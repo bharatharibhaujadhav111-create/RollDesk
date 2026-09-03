@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { get, put } from "@vercel/blob";
+import { getSupabaseAdmin } from "@/server/supabase";
 
 const execFileAsync = promisify(execFile);
 const serviceRoot = path.resolve(process.cwd());
@@ -24,7 +25,7 @@ const canPersistToBlob = Boolean(
 );
 const metadataBlobPath = (filePath: string) =>
   `electoral-roll-index/${path.basename(filePath)}`;
-const INDEX_FORMAT_VERSION = 5;
+const INDEX_FORMAT_VERSION = 6;
 export const VILLAGES = [
   { id: "akolekati", name: "Akolekati", nameMr: "अकोलेकाटी" },
   { id: "banegaon", name: "Banegaon", nameMr: "बाणेगाव" },
@@ -124,6 +125,7 @@ let state: IndexState = {
 };
 let initialized = false;
 let rebuildRequested = false;
+let ocrLanguagePromise: Promise<string> | null = null;
 
 type SearchDocument = {
   record: RollRecord;
@@ -140,6 +142,161 @@ function rebuildSearchDocuments() {
     relativeName: clean(record.relativeName),
     epicNumber: clean(record.epicNumber ?? ""),
   }));
+}
+
+async function createDatabaseJob(asset: {
+  id: string;
+  name: string;
+  villageId: string;
+  sizeBytes: number;
+}) {
+  const database = getSupabaseAdmin();
+  if (!database) return null;
+  const { error: assetError } = await database.from("pdf_assets").upsert({
+    id: asset.id,
+    original_name: asset.name,
+    storage_path: `pdfs/${asset.id}.pdf`,
+    village_id: asset.villageId,
+    size_bytes: asset.sizeBytes,
+    status: "queued",
+    error: null,
+    updated_at: new Date().toISOString(),
+  });
+  if (assetError)
+    throw new Error(`Could not save upload job: ${assetError.message}`);
+  const { data, error } = await database
+    .from("index_jobs")
+    .insert({ pdf_id: asset.id, status: "queued" })
+    .select("id")
+    .single();
+  if (error) throw new Error(`Could not create index job: ${error.message}`);
+  return data.id as string;
+}
+
+async function persistIndexedPdf(pdfId: string, jobId?: string) {
+  const database = getSupabaseAdmin();
+  if (!database) return;
+  const pdfRecords = records.filter((record) => record.pdfId === pdfId);
+  const { error: deleteError } = await database
+    .from("voters")
+    .delete()
+    .eq("pdf_id", pdfId);
+  if (deleteError)
+    throw new Error(`Could not replace indexed voters: ${deleteError.message}`);
+  for (let start = 0; start < pdfRecords.length; start += 500) {
+    const batch = pdfRecords.slice(start, start + 500).map((record) => ({
+      id: record.id,
+      pdf_id: record.pdfId,
+      village_id: villageForPdf(record.pdfId),
+      page_number: record.pageNumber,
+      part_number: record.partNumber,
+      serial_number: record.serialNumber,
+      epic_number: record.epicNumber,
+      voter_name: record.voterName,
+      relative_name: record.relativeName,
+      relative_label: record.relativeLabel,
+      house_number: record.houseNumber,
+      age: record.age,
+      gender: record.gender,
+      confidence: record.confidence,
+      voter_name_normalized: clean(record.voterName),
+      relative_name_normalized: clean(record.relativeName),
+    }));
+    if (batch.length) {
+      const { error } = await database.from("voters").insert(batch);
+      if (error)
+        throw new Error(`Could not save indexed voters: ${error.message}`);
+    }
+  }
+  await database
+    .from("pdf_assets")
+    .update({
+      status: "ready",
+      indexed_records: pdfRecords.length,
+      error: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", pdfId);
+  if (jobId) {
+    await database
+      .from("index_jobs")
+      .update({
+        status: "ready",
+        records_found: pdfRecords.length,
+        finished_at: new Date().toISOString(),
+      })
+      .eq("id", jobId);
+  }
+}
+
+async function failDatabaseJob(pdfId: string, jobId: string, message: string) {
+  const database = getSupabaseAdmin();
+  if (!database) return;
+  await Promise.all([
+    database
+      .from("pdf_assets")
+      .update({
+        status: "failed",
+        error: message,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", pdfId),
+    database
+      .from("index_jobs")
+      .update({
+        status: "failed",
+        error: message,
+        finished_at: new Date().toISOString(),
+      })
+      .eq("id", jobId),
+  ]);
+}
+
+async function startDatabaseJob(pdfId: string, jobId: string) {
+  const database = getSupabaseAdmin();
+  if (!database) return;
+  const now = new Date().toISOString();
+  await Promise.all([
+    database
+      .from("pdf_assets")
+      .update({ status: "extracting", error: null, updated_at: now })
+      .eq("id", pdfId),
+    database
+      .from("index_jobs")
+      .update({ status: "extracting", started_at: now, error: null })
+      .eq("id", jobId),
+  ]);
+}
+
+async function updateDatabaseProgress(
+  pdfId: string,
+  jobId: string,
+  currentPage: number,
+  totalPages: number,
+  usedOcr: boolean,
+) {
+  const database = getSupabaseAdmin();
+  if (!database) return;
+  const status = usedOcr ? "ocr" : "extracting";
+  await Promise.all([
+    database
+      .from("pdf_assets")
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq("id", pdfId),
+    database
+      .from("index_jobs")
+      .update({ status, current_page: currentPage, total_pages: totalPages })
+      .eq("id", jobId),
+  ]);
+}
+
+async function databaseProgressTotal(jobId: string, totalPages: number) {
+  const database = getSupabaseAdmin();
+  if (!database) return;
+  await database
+    .from("index_jobs")
+    .update({ total_pages: totalPages })
+    .eq("id", jobId);
 }
 
 function clean(value: string) {
@@ -284,14 +441,14 @@ type LabeledField = { label: string; value: string };
 
 function readLabeledFields(line: string): LabeledField[] {
   const labels =
-    /(?<!['’A-Za-z])((?:father['’]s|husband['’]s|mother['’]s|guardian['’]s)\s+name|name|house\s+number|age|gender|sex)\s*:\s*/gi;
+    /(?<!['’A-Za-z])((?:father['’]s|husband['’]s|mother['’]s|guardian['’]s)\s+name|name|house\s+number|age|gender|sex|\u092e\u0924\u0926\u093e\u0930\u093e\u091a\u0947\s+\u0928\u093e\u0935|\u0935\u0921\u093f\u0932\u093e\u0902\u091a\u0947\s+\u0928\u093e\u0935|\u092a\u0924\u0940\u091a\u0947\s+\u0928\u093e\u0935|\u0906\u0908\u091a\u0947\s+\u0928\u093e\u0935|\u092a\u093e\u0932\u0915\u093e\u091a\u0947\s+\u0928\u093e\u0935|\u0918\u0930\s*\u0915\u094d\u0930\u092e\u093e\u0902\u0915|\u0935\u092f|\u0932\u093f\u0902\u0917)\s*[:\-]?\s*/gi;
   const matches = Array.from(line.matchAll(labels));
   return matches
     .map((match, index) => {
       const start = (match.index ?? 0) + match[0].length;
       const end = matches[index + 1]?.index ?? line.length;
       return {
-        label: match[1].toLowerCase().replace(/\s+/g, " ").trim(),
+        label: canonicalFieldLabel(match[1]),
         value: line
           .slice(start, end)
           .trim()
@@ -666,6 +823,42 @@ function parseTextRecords(
   });
 }
 
+async function extractPdfPagesWithPdfJs(
+  filePath: string,
+  onPage: (page: ExtractedPage) => Promise<void>,
+) {
+  // This path works on Vercel where Poppler is not installed. It handles PDFs
+  // with embedded text without needing a system executable or native module.
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const data = new Uint8Array(await fs.readFile(filePath));
+  const loadingTask = pdfjs.getDocument({
+    data,
+    useWorkerFetch: false,
+    isEvalSupported: false,
+  });
+  const document = await loadingTask.promise;
+  try {
+    let extractedPages = 0;
+    for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
+      const page = await document.getPage(pageNumber);
+      const content = await page.getTextContent();
+      let text = "";
+      for (const item of content.items) {
+        if (!("str" in item)) continue;
+        text += item.str;
+        text += item.hasEOL ? "\n" : " ";
+      }
+      text = text.replace(/[ \t]+\n/g, "\n").trim();
+      if (!text) continue;
+      await onPage({ pageNumber, text, usedOcr: false });
+      extractedPages += 1;
+    }
+    return { totalPages: document.numPages, extractedPages };
+  } finally {
+    await document.destroy();
+  }
+}
+
 async function extractPdfPages(
   filePath: string,
   onPage: (page: ExtractedPage) => Promise<void>,
@@ -690,9 +883,17 @@ async function extractPdfPages(
       error instanceof Error && "code" in error && error.code === "ENOENT";
     // OCR is the fallback for image-only or malformed text layers.
   }
+  try {
+    const extracted = await extractPdfPagesWithPdfJs(filePath, onPage);
+    if (extracted.extractedPages > 0) {
+      return { totalPages: extracted.totalPages, ocrPages: 0 };
+    }
+  } catch {
+    // Continue to OCR for image-only PDFs when it is available.
+  }
   if (textExtractionUnavailable) {
     throw new Error(
-      "PDF text extraction tools are unavailable; install pdftotext or upload text-indexed PDFs.",
+      "This scanned PDF needs OCR, but no OCR service is configured. Text-based PDFs are supported automatically.",
     );
   }
   const pageInfo = await execFileAsync("pdfinfo", [filePath]).catch(() => ({
@@ -702,11 +903,12 @@ async function extractPdfPages(
   const workDir = await fs.mkdtemp(path.join(tmpdir(), "roll-ocr-"));
   let ocrPages = 0;
   try {
+    const ocrLanguage = await getOcrLanguages();
     for (let page = 1; page <= pages; page += 1) {
       const outputBase = path.join(workDir, `page-${page}`);
       await execFileAsync("pdftoppm", [
         "-r",
-        "90",
+        "250",
         "-f",
         String(page),
         "-l",
@@ -716,17 +918,39 @@ async function extractPdfPages(
         filePath,
         outputBase,
       ]);
-      const ocrOptions = { env: { ...process.env, OMP_THREAD_LIMIT: "1" } };
+      const ocrOptions = {
+        env: { ...process.env, OMP_THREAD_LIMIT: "1" },
+        timeout: 90_000,
+        maxBuffer: 16 * 1024 * 1024,
+      };
       const ocr = await execFileAsync(
         "tesseract",
-        [`${outputBase}.png`, "stdout", "--psm", "6", "-l", "eng"],
+        [
+          `${outputBase}.png`,
+          "stdout",
+          "--psm",
+          "6",
+          "-l",
+          ocrLanguage,
+          "-c",
+          "preserve_interword_spaces=1",
+        ],
         ocrOptions,
       );
-      const epicText = /\bname\s*:/i.test(ocr.stdout)
+      const epicText = /\bname\s*:|\u0928\u093e\u0935\s*[:\-]/i.test(ocr.stdout)
         ? (
             await execFileAsync(
               "tesseract",
-              [`${outputBase}.png`, "stdout", "--psm", "11", "-l", "eng"],
+              [
+                `${outputBase}.png`,
+                "stdout",
+                "--psm",
+                "11",
+                "-l",
+                ocrLanguage,
+                "-c",
+                "preserve_interword_spaces=1",
+              ],
               ocrOptions,
             )
           ).stdout
@@ -749,7 +973,7 @@ async function writeJson(filePath: string, value: unknown) {
   const temporaryPath = `${filePath}.tmp`;
   const content = JSON.stringify(value, null, 2);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(temporaryPath, content);
+  await fs.writeFile(temporaryPath, new Uint8Array(Buffer.from(content)));
   await fs.rename(temporaryPath, filePath);
   if (canPersistToBlob) {
     await put(metadataBlobPath(filePath), content, {
@@ -759,6 +983,70 @@ async function writeJson(filePath: string, value: unknown) {
       contentType: "application/json",
     });
   }
+}
+
+function canonicalFieldLabel(label: string) {
+  const value = label.toLowerCase().replace(/\s+/g, " ").trim();
+  if (
+    /^(?:name|\u092e\u0924\u0926\u093e\u0930\u093e\u091a\u0947 \u0928\u093e\u0935)$/.test(
+      value,
+    )
+  )
+    return "name";
+  if (
+    /^(?:father['’]s name|\u0935\u0921\u093f\u0932\u093e\u0902\u091a\u0947 \u0928\u093e\u0935)$/.test(
+      value,
+    )
+  )
+    return "father's name";
+  if (
+    /^(?:husband['’]s name|\u092a\u0924\u0940\u091a\u0947 \u0928\u093e\u0935)$/.test(
+      value,
+    )
+  )
+    return "husband's name";
+  if (
+    /^(?:mother['’]s name|guardian['’]s name|\u0906\u0908\u091a\u0947 \u0928\u093e\u0935|\u092a\u093e\u0932\u0915\u093e\u091a\u0947 \u0928\u093e\u0935)$/.test(
+      value,
+    )
+  )
+    return "guardian's name";
+  if (
+    /^(?:house number|\u0918\u0930 ?\u0915\u094d\u0930\u092e\u093e\u0902\u0915)$/.test(
+      value,
+    )
+  )
+    return "house number";
+  if (/^(?:age|\u0935\u092f)$/.test(value)) return "age";
+  if (/^(?:gender|sex|\u0932\u093f\u0902\u0917)$/.test(value)) return "gender";
+  return value;
+}
+
+async function getOcrLanguages() {
+  if (!ocrLanguagePromise) {
+    ocrLanguagePromise = execFileAsync("tesseract", ["--list-langs"])
+      .then(({ stdout }) => {
+        const languages = new Set(
+          stdout
+            .split(/\r?\n/)
+            .map((value) => value.trim())
+            .filter(
+              (value) => value && !/^list of available languages/i.test(value),
+            ),
+        );
+        if (languages.has("mar") && languages.has("eng")) return "mar+eng";
+        if (languages.has("mar")) return "mar";
+        if (languages.has("eng")) return "eng";
+        throw new Error(
+          "Tesseract has no usable Marathi or English language data",
+        );
+      })
+      .catch((error) => {
+        ocrLanguagePromise = null;
+        throw error;
+      });
+  }
+  return ocrLanguagePromise;
 }
 
 async function readJson<T>(filePath: string): Promise<T> {
@@ -778,6 +1066,36 @@ async function readJson<T>(filePath: string): Promise<T> {
 async function getPageCount(filePath: string) {
   const info = await execFileAsync("pdfinfo", [filePath]);
   return Number(info.stdout.match(/^Pages:\s+(\d+)/m)?.[1] || 1);
+}
+
+async function refreshDatabaseRecords() {
+  const database = getSupabaseAdmin();
+  if (!database) return;
+  const { data: databaseRecords, error } = await database
+    .from("voters")
+    .select(
+      "id, pdf_id, village_id, page_number, part_number, serial_number, epic_number, voter_name, relative_name, relative_label, house_number, age, gender, confidence",
+    );
+  if (error) throw new Error(`Could not load indexed voters: ${error.message}`);
+  if (!databaseRecords) return;
+  records = databaseRecords.map((row) => ({
+    id: row.id,
+    pdfId: row.pdf_id,
+    villageId: row.village_id,
+    pageNumber: row.page_number,
+    partNumber: row.part_number,
+    serialNumber: row.serial_number,
+    epicNumber: row.epic_number,
+    voterName: row.voter_name,
+    relativeName: row.relative_name,
+    relativeLabel: row.relative_label,
+    houseNumber: row.house_number,
+    age: row.age,
+    gender: row.gender,
+    confidence: Number(row.confidence),
+    pdfName: row.pdf_id,
+  }));
+  rebuildSearchDocuments();
 }
 
 export async function ensureStorage() {
@@ -806,6 +1124,7 @@ export async function ensureStorage() {
     await writeJson(villagePath, villageAssignments);
     await writeJson(statePath, state);
   }
+  await refreshDatabaseRecords();
   initialized = true;
   rebuildSearchDocuments();
   const files = (await fs.readdir(pdfDirectory)).filter((file) =>
@@ -826,7 +1145,7 @@ export async function ensureStorage() {
       await writeJson(indexPath, records);
     }
     state = { ...state, status: "ready" };
-    void rebuildIndex();
+    await rebuildIndex();
   }
 }
 
@@ -840,6 +1159,40 @@ export function getRecords() {
 
 export async function listPdfs(query = "") {
   await ensureStorage();
+  const database = getSupabaseAdmin();
+  if (database) {
+    const { data: assets, error } = await database
+      .from("pdf_assets")
+      .select(
+        "id, original_name, village_id, size_bytes, page_count, indexed_records, status, created_at",
+      )
+      .order("created_at", { ascending: false });
+    if (error) throw new Error(`Could not load PDFs: ${error.message}`);
+    const normalizedQuery = clean(query);
+    return (assets ?? [])
+      .filter(
+        (asset) =>
+          !normalizedQuery ||
+          clean(asset.original_name).includes(normalizedQuery),
+      )
+      .map((asset) => ({
+        id: asset.id,
+        name: asset.original_name,
+        villageId: asset.village_id,
+        villageName:
+          VILLAGES.find((village) => village.id === asset.village_id)?.name ??
+          "Unknown",
+        villageNameMr:
+          VILLAGES.find((village) => village.id === asset.village_id)?.nameMr ??
+          "",
+        sizeBytes: asset.size_bytes,
+        pageCount: asset.page_count ?? 1,
+        uploadedAt: asset.created_at,
+        status: asset.status,
+        indexedRecords: asset.indexed_records,
+        fileUrl: `/api/files/${encodeURIComponent(asset.id)}`,
+      }));
+  }
   const localFiles = await fs.readdir(pdfDirectory);
   // A fresh Vercel function has an empty /tmp directory. Indexed records retain
   // enough metadata to keep previously uploaded PDFs visible in the admin UI.
@@ -859,7 +1212,9 @@ export async function listPdfs(query = "") {
     files
       .filter((file) => file.toLowerCase().endsWith(".pdf"))
       .map(async (file) => {
-        const stats = await fs.stat(path.join(pdfDirectory, file)).catch(() => null);
+        const stats = await fs
+          .stat(path.join(pdfDirectory, file))
+          .catch(() => null);
         const id = path.basename(file, ".pdf");
         let pageCount = 1;
         try {
@@ -914,6 +1269,7 @@ export async function searchIndex(
   villageId = DEFAULT_VILLAGE_ID,
 ) {
   await ensureStorage();
+  await refreshDatabaseRecords();
   const filters = parseSearchQuery(query);
   const normalizedName = clean(filters.name ?? "");
   const normalizedRelativeName = clean(filters.relativeName ?? "");
@@ -1028,7 +1384,7 @@ export async function addPdf(
     : `${baseName}.pdf`;
   const filePath = path.join(pdfDirectory, `${safeId}.pdf`);
   const temporaryPath = `${filePath}.uploading`;
-  await fs.writeFile(temporaryPath, data);
+  await fs.writeFile(temporaryPath, new Uint8Array(data));
   await fs.rename(temporaryPath, filePath);
   if (process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN) {
     await put(`pdfs/${safeId}.pdf`, data, {
@@ -1041,8 +1397,99 @@ export async function addPdf(
   await fs.writeFile(path.join(pdfDirectory, `${safeId}.label`), safeName);
   villageAssignments[safeId] = villageId;
   await writeJson(villagePath, villageAssignments);
-  void rebuildIndex();
+  const jobId = await createDatabaseJob({
+    id: safeId,
+    name: safeName,
+    villageId,
+    sizeBytes: data.length,
+  });
   return (await listPdfs()).find((pdf) => pdf.id === safeId);
+}
+
+export async function processQueuedJobs(limit = 1) {
+  const database = getSupabaseAdmin();
+  if (!database)
+    throw new Error("Supabase is required for the indexing worker");
+
+  const { data: jobs, error } = await database
+    .from("index_jobs")
+    .select("id, pdf_id")
+    .eq("status", "queued")
+    .order("created_at", { ascending: true })
+    .limit(limit);
+  if (error) throw new Error(`Could not load queued jobs: ${error.message}`);
+
+  for (const job of jobs ?? []) {
+    const { data: claimed, error: claimError } = await database
+      .from("index_jobs")
+      .update({ status: "extracting", started_at: new Date().toISOString() })
+      .eq("id", job.id)
+      .eq("status", "queued")
+      .select("id")
+      .maybeSingle();
+    if (claimError)
+      throw new Error(`Could not claim index job: ${claimError.message}`);
+    if (!claimed) continue;
+
+    const { data: asset, error: assetError } = await database
+      .from("pdf_assets")
+      .select("id, storage_path")
+      .eq("id", job.pdf_id)
+      .single();
+    if (assetError) {
+      await failDatabaseJob(job.pdf_id, job.id, assetError.message);
+      continue;
+    }
+
+    const temporaryPath = path.join(tmpdir(), `electoral-roll-${asset.id}.pdf`);
+    try {
+      const blob = await get(asset.storage_path, { access: "private" });
+      if (!blob) throw new Error("The source PDF is missing from Blob storage");
+      await fs.writeFile(
+        temporaryPath,
+        new Uint8Array(await new Response(blob.stream).arrayBuffer()),
+      );
+      await fs.mkdir(pdfDirectory, { recursive: true });
+      await fs.copyFile(
+        temporaryPath,
+        path.join(pdfDirectory, `${asset.id}.pdf`),
+      );
+      await rebuildIndex([asset.id], new Map([[asset.id, job.id]]));
+    } catch (workerError) {
+      const message =
+        workerError instanceof Error ? workerError.message : "Indexing failed";
+      await failDatabaseJob(asset.id, job.id, message);
+    } finally {
+      await fs.rm(temporaryPath, { force: true });
+    }
+  }
+  return jobs?.length ?? 0;
+}
+
+export async function queueAllIndexJobs() {
+  const database = getSupabaseAdmin();
+  if (!database) throw new Error("Supabase is required for queued indexing");
+  const { data: assets, error } = await database
+    .from("pdf_assets")
+    .select("id");
+  if (error) throw new Error(`Could not load PDFs: ${error.message}`);
+  if (!assets?.length) return;
+  const { error: insertError } = await database
+    .from("index_jobs")
+    .insert(assets.map((asset) => ({ pdf_id: asset.id, status: "queued" })));
+  if (insertError)
+    throw new Error(`Could not queue indexing: ${insertError.message}`);
+  await database
+    .from("pdf_assets")
+    .update({
+      status: "queued",
+      error: null,
+      updated_at: new Date().toISOString(),
+    })
+    .in(
+      "id",
+      assets.map((asset) => asset.id),
+    );
 }
 
 export async function renamePdf(id: string, name: string) {
@@ -1073,21 +1520,28 @@ export async function removePdf(id: string) {
   await writeJson(indexPath, records);
 }
 
-export async function rebuildIndex() {
+export async function rebuildIndex(
+  targetPdfIds?: string[],
+  jobIdsByPdf?: Map<string, string>,
+) {
   if (state.status === "indexing") {
     rebuildRequested = true;
     return;
   }
-  const files = (await fs.readdir(pdfDirectory)).filter((file) =>
+  const allFiles = (await fs.readdir(pdfDirectory)).filter((file) =>
     file.toLowerCase().endsWith(".pdf"),
   );
+  const targetIds = targetPdfIds ? new Set(targetPdfIds) : null;
+  const files = targetIds
+    ? allFiles.filter((file) => targetIds.has(path.basename(file, ".pdf")))
+    : allFiles;
   let indexedPdfs = 0;
   let failedPdfs = 0;
   let ocrPages = 0;
   const warnings: string[] = [];
   state = {
     ...state,
-    totalPdfs: files.length,
+    totalPdfs: allFiles.length,
     totalRecords: records.length,
     status: "indexing",
     progress: 5,
@@ -1106,6 +1560,15 @@ export async function rebuildIndex() {
       1,
       pageCounts.reduce((sum, count) => sum + count, 0),
     );
+    for (const file of files) {
+      const jobId = jobIdsByPdf?.get(path.basename(file, ".pdf"));
+      if (jobId) {
+        await databaseProgressTotal(
+          jobId,
+          pageCounts[files.indexOf(file)] ?? 1,
+        );
+      }
+    }
     let processedPages = 0;
     const indexedRecords = new Map<string, RollRecord[]>();
     const existingByPdf = new Map<string, RollRecord[]>();
@@ -1116,8 +1579,10 @@ export async function rebuildIndex() {
     }
     const indexFile = async (file: string, fileIndex: number) => {
       const id = path.basename(file, ".pdf");
+      const jobId = jobIdsByPdf?.get(id);
       let parsedForPdf: RollRecord[] = [];
       try {
+        if (jobId) await startDatabaseJob(id, jobId);
         await extractPdfPages(path.join(pdfDirectory, file), async (page) => {
           if (page.usedOcr) ocrPages += 1;
           const parsed = parseTextRecords(
@@ -1129,6 +1594,15 @@ export async function rebuildIndex() {
           );
           parsedForPdf = [...parsedForPdf, ...parsed];
           processedPages += 1;
+          if (jobId) {
+            await updateDatabaseProgress(
+              id,
+              jobId,
+              page.pageNumber,
+              pageCounts[fileIndex] ?? 1,
+              page.usedOcr,
+            );
+          }
           state = {
             ...state,
             progress: Math.min(
@@ -1144,7 +1618,8 @@ export async function rebuildIndex() {
         if (unique.length === 0) {
           warnings.push(`${file}: no voter records could be recognized`);
           // Preserve a previously usable index when a new extraction is empty.
-          if (existingByPdf.has(id)) indexedRecords.set(id, existingByPdf.get(id)!);
+          if (existingByPdf.has(id))
+            indexedRecords.set(id, existingByPdf.get(id)!);
         } else {
           indexedRecords.set(id, unique);
         }
@@ -1164,7 +1639,9 @@ export async function rebuildIndex() {
           failedPdfs += 1;
           warnings.push(`${file}: ${message}`);
         }
-        if (existingByPdf.has(id)) indexedRecords.set(id, existingByPdf.get(id)!);
+        if (existingByPdf.has(id))
+          indexedRecords.set(id, existingByPdf.get(id)!);
+        if (jobId) await failDatabaseJob(id, jobId, message);
       }
       state = {
         ...state,
@@ -1195,9 +1672,23 @@ export async function rebuildIndex() {
       ...Array.from(indexedRecords.values()).flat(),
     ];
     rebuildSearchDocuments();
+    for (const file of files) {
+      const pdfId = path.basename(file, ".pdf");
+      const jobId = jobIdsByPdf?.get(pdfId);
+      if (jobId) {
+        try {
+          await persistIndexedPdf(pdfId, jobId);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "database indexing failed";
+          await failDatabaseJob(pdfId, jobId, message);
+          throw error;
+        }
+      }
+    }
     state = {
       ...state,
-      totalPdfs: files.length,
+      totalPdfs: allFiles.length,
       totalRecords: records.length,
       status: failedPdfs > 0 ? "error" : "ready",
       lastIndexedAt: new Date().toISOString(),

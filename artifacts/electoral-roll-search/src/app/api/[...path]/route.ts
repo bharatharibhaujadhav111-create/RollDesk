@@ -19,7 +19,7 @@ import {
   getSuggestions,
   listPdfs,
   pdfDirectory,
-  rebuildIndex,
+  queueAllIndexJobs,
   removePdf,
   renamePdf,
   searchIndex,
@@ -115,9 +115,12 @@ export async function GET(request: Request, context: RouteContext) {
       if (process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN) {
         const blob = await get(`pdfs/${id}.pdf`, { access: "private" });
         if (blob) {
-          return new NextResponse(await new Response(blob.stream).arrayBuffer(), {
-            headers: { "Content-Type": "application/pdf" },
-          });
+          return new NextResponse(
+            await new Response(blob.stream).arrayBuffer(),
+            {
+              headers: { "Content-Type": "application/pdf" },
+            },
+          );
         }
       }
       return NextResponse.json({ error: "PDF not found" }, { status: 404 });
@@ -256,9 +259,11 @@ export async function POST(request: Request, context: RouteContext) {
       segments[1] === "index" &&
       segments[2] === "rebuild"
     ) {
-      await ensureStorage();
-      void rebuildIndex();
-      return NextResponse.json(getIndexState(), { status: 202 });
+      await queueAllIndexJobs();
+      return NextResponse.json(
+        { ...getIndexState(), status: "queued" },
+        { status: 202 },
+      );
     }
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   } catch (error) {

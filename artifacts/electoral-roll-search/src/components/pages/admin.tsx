@@ -307,11 +307,12 @@ export default function AdminPage() {
 
   const pdfParams = filter ? { q: filter } : undefined;
   const statsQuery = useGetAdminStats({
-    query: { queryKey: getGetAdminStatsQueryKey() },
+    query: { queryKey: getGetAdminStatsQueryKey(), refetchInterval: 3000 },
   });
   const assetsQuery = useListPdfAssets(pdfParams, {
     query: {
       queryKey: getListPdfAssetsQueryKey(pdfParams),
+      refetchInterval: 3000,
     },
   });
   const rebuildIndex = useRebuildSearchIndex();
