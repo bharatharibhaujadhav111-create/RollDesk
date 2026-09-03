@@ -300,6 +300,16 @@ async function databaseProgressTotal(jobId: string, totalPages: number) {
     .eq("id", jobId);
 }
 
+async function databasePageCount(pdfId: string, totalPages: number) {
+  const database = getSupabaseAdmin();
+  if (!database) return;
+  const { error } = await database
+    .from("pdf_assets")
+    .update({ page_count: totalPages, updated_at: new Date().toISOString() })
+    .eq("id", pdfId);
+  if (error) throw new Error(`Could not save PDF page count: ${error.message}`);
+}
+
 function clean(value: string) {
   return value
     .toLowerCase()
@@ -1592,6 +1602,14 @@ export async function queueAllIndexJobs() {
     .select("id");
   if (error) throw new Error(`Could not load PDFs: ${error.message}`);
   if (!assets?.length) return;
+  const assetIds = assets.map((asset) => asset.id);
+  const { error: clearError } = await database
+    .from("index_jobs")
+    .delete()
+    .in("pdf_id", assetIds)
+    .in("status", ["queued", "extracting", "ocr", "indexing"]);
+  if (clearError)
+    throw new Error(`Could not reset existing index jobs: ${clearError.message}`);
   const { error: insertError } = await database
     .from("index_jobs")
     .insert(assets.map((asset) => ({ pdf_id: asset.id, status: "queued" })));
@@ -1606,7 +1624,7 @@ export async function queueAllIndexJobs() {
     })
     .in(
       "id",
-      assets.map((asset) => asset.id),
+      assetIds,
     );
 }
 
@@ -1686,6 +1704,10 @@ export async function rebuildIndex(
       pageCounts.reduce((sum, count) => sum + count, 0),
     );
     for (const file of files) {
+      await databasePageCount(
+        path.basename(file, ".pdf"),
+        pageCounts[files.indexOf(file)] ?? 1,
+      );
       const jobId = jobIdsByPdf?.get(path.basename(file, ".pdf"));
       if (jobId) {
         await databaseProgressTotal(
