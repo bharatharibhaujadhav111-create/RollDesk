@@ -42,8 +42,11 @@ function errorResponse(error: unknown) {
       { status: 400 },
     );
   }
-  const message =
+  const rawMessage =
     error instanceof Error ? error.message : "Unknown server error";
+  const message = /client token|BLOB_READ_WRITE_TOKEN/i.test(rawMessage)
+    ? "Vercel Blob is not configured. Connect a Blob store and add the Vercel-generated BLOB_READ_WRITE_TOKEN to this deployment."
+    : rawMessage;
   return NextResponse.json({ error: message }, { status: 500 });
 }
 
@@ -125,6 +128,15 @@ export async function POST(request: Request, context: RouteContext) {
       segments[0] === "admin" &&
       segments[1] === "blob-upload"
     ) {
+      if (!process.env.BLOB_READ_WRITE_TOKEN) {
+        return NextResponse.json(
+          {
+            error:
+              "Vercel Blob is not configured. Add BLOB_READ_WRITE_TOKEN to this deployment.",
+          },
+          { status: 503 },
+        );
+      }
       const jsonResponse = await handleUpload({
         body: await request.json(),
         request,
