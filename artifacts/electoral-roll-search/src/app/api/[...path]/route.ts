@@ -165,8 +165,30 @@ export async function POST(request: Request, context: RouteContext) {
           { status: 503 },
         );
       }
+      let body: Parameters<typeof handleUpload>[0]["body"];
+      try {
+        const parsed = (await request.json()) as Record<string, unknown>;
+        if (
+          typeof parsed !== "object" ||
+          parsed === null ||
+          typeof parsed.type !== "string" ||
+          typeof parsed.payload !== "object" ||
+          parsed.payload === null
+        ) {
+          return NextResponse.json(
+            { error: "Invalid Blob upload request" },
+            { status: 400 },
+          );
+        }
+        body = parsed as unknown as Parameters<typeof handleUpload>[0]["body"];
+      } catch {
+        return NextResponse.json(
+          { error: "Invalid Blob upload request" },
+          { status: 400 },
+        );
+      }
       const jsonResponse = await handleUpload({
-        body: await request.json(),
+        body,
         request,
         onBeforeGenerateToken: async () => ({
           allowedContentTypes: ["application/pdf"],
