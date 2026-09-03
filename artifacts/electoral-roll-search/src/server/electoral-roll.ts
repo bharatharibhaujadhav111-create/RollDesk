@@ -1497,7 +1497,9 @@ export async function addPdf(
     await fs.rm(filePath, { force: true }).catch(() => undefined);
     await fs.rm(labelPath, { force: true }).catch(() => undefined);
     if (database) {
-      await database.storage.from(PDF_BUCKET).remove([`${safeId}.pdf`]);
+      await database.storage
+        .from(PDF_BUCKET)
+        .remove([existingStoragePath ?? `${safeId}.pdf`]);
     }
     if (hadVillageAssignment) villageAssignments[safeId] = previousVillage;
     else delete villageAssignments[safeId];
