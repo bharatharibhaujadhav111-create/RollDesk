@@ -1425,6 +1425,7 @@ export async function addPdf(
   fileName: string,
   data: Buffer,
   villageId = DEFAULT_VILLAGE_ID,
+  existingStoragePath?: string,
 ) {
   await ensureStorage();
   const baseId = id.replace(/[^a-z0-9-]/gi, "-").toLowerCase() || "roll";
@@ -1466,7 +1467,7 @@ export async function addPdf(
   try {
     await fs.writeFile(temporaryPath, new Uint8Array(data));
     await fs.rename(temporaryPath, filePath);
-    if (database) {
+    if (database && !existingStoragePath) {
       const { error: storageError } = await database.storage
         .from(PDF_BUCKET)
         .upload(`${safeId}.pdf`, data, {
@@ -1486,7 +1487,9 @@ export async function addPdf(
       name: safeName,
       villageId,
       sizeBytes: data.length,
-      storagePath: database ? `${safeId}.pdf` : undefined,
+      storagePath: database
+        ? (existingStoragePath ?? `${safeId}.pdf`)
+        : undefined,
     });
     return (await listPdfs()).find((pdf) => pdf.id === safeId);
   } catch (error) {
@@ -1574,7 +1577,9 @@ export async function processQueuedJobs(limit = 1) {
             new Uint8Array(await storedPdf.arrayBuffer()),
           );
         } else {
-          throw new Error("The source PDF is missing from local and Supabase Storage");
+          throw new Error(
+            "The source PDF is missing from local and Supabase Storage",
+          );
         }
       }
       await fs.mkdir(pdfDirectory, { recursive: true });
@@ -1609,7 +1614,9 @@ export async function queueAllIndexJobs() {
     .in("pdf_id", assetIds)
     .in("status", ["queued", "extracting", "ocr", "indexing"]);
   if (clearError)
-    throw new Error(`Could not reset existing index jobs: ${clearError.message}`);
+    throw new Error(
+      `Could not reset existing index jobs: ${clearError.message}`,
+    );
   const { error: insertError } = await database
     .from("index_jobs")
     .insert(assets.map((asset) => ({ pdf_id: asset.id, status: "queued" })));
@@ -1622,10 +1629,7 @@ export async function queueAllIndexJobs() {
       error: null,
       updated_at: new Date().toISOString(),
     })
-    .in(
-      "id",
-      assetIds,
-    );
+    .in("id", assetIds);
 }
 
 export async function renamePdf(id: string, name: string) {

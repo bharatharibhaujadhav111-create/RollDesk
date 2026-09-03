@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
+import { Upload as TusUpload } from "tus-js-client";
 import {
   getGetAdminStatsQueryKey,
   getListPdfAssetsQueryKey,
@@ -369,15 +370,57 @@ export default function AdminPage() {
         size: file.size,
       });
 
-      console.log("[PDF Upload] Uploading directly to Supabase-backed endpoint");
-      const response = await fetch(
-        `/api/admin/pdfs?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`,
-        {
+      const signResponse = await fetch("/api/admin/upload/signed-url", {
         method: "POST",
-          headers: { "Content-Type": "application/pdf" },
-          body: file,
-        },
-      );
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: uploadName, size: file.size }),
+      });
+      if (!signResponse.ok) {
+        const data = (await signResponse.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(
+          data?.error || `Upload authorization failed (${signResponse.status})`,
+        );
+      }
+      const signed = (await signResponse.json()) as {
+        endpoint: string;
+        path: string;
+        token: string;
+      };
+      await new Promise<void>((resolve, reject) => {
+        const resumable = new TusUpload(file, {
+          endpoint: signed.endpoint,
+          chunkSize: 6 * 1024 * 1024,
+          retryDelays: [0, 3000, 5000, 10000, 20000],
+          uploadDataDuringCreation: true,
+          removeFingerprintOnSuccess: true,
+          headers: { "x-signature": signed.token },
+          metadata: {
+            bucketName: "electoral-roll-pdfs",
+            objectName: signed.path,
+            contentType: "application/pdf",
+          },
+          onProgress: (uploaded, total) => {
+            const percent = Math.round((uploaded / total) * 100);
+            setNotice(`Uploading ${file.name} (${percent}%)`);
+          },
+          onError: reject,
+          onSuccess: () => resolve(),
+        });
+        resumable.start();
+      });
+
+      const response = await fetch("/api/admin/upload/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: signed.path,
+          filename: file.name,
+          village,
+          size: file.size,
+        }),
+      });
 
       if (!response.ok) {
         const data = (await response.json().catch(() => null)) as {

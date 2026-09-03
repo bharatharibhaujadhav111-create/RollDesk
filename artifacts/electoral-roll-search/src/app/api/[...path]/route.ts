@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { after, NextResponse } from "next/server";
 import {
   DeletePdfParams,
@@ -27,7 +27,7 @@ import {
   searchIndex,
   VILLAGES,
 } from "@/server/electoral-roll";
-import { isSupabaseEnabled } from "@/server/supabase";
+import { getSupabaseAdmin, isSupabaseEnabled } from "@/server/supabase";
 
 export const runtime = "nodejs";
 
@@ -143,6 +143,125 @@ export async function POST(request: Request, context: RouteContext) {
   const query = Object.fromEntries(new URL(request.url).searchParams);
 
   try {
+    if (
+      segments.length === 3 &&
+      segments[0] === "admin" &&
+      segments[1] === "upload" &&
+      segments[2] === "signed-url"
+    ) {
+      const database = getSupabaseAdmin();
+      if (!database)
+        return NextResponse.json(
+          { error: "Supabase is not configured" },
+          { status: 503 },
+        );
+      const body = (await request.json()) as {
+        filename?: string;
+        size?: number;
+      };
+      const size = Number(body.size);
+      if (
+        !body.filename ||
+        !Number.isSafeInteger(size) ||
+        size <= 0 ||
+        size > MAX_UPLOAD_BYTES
+      ) {
+        return NextResponse.json(
+          { error: "A valid PDF filename and size are required" },
+          { status: 400 },
+        );
+      }
+      const storagePath = `uploads/${randomUUID()}.pdf`;
+      const { data, error } = await database.storage
+        .from("electoral-roll-pdfs")
+        .createSignedUploadUrl(storagePath, { upsert: false });
+      if (error || !data)
+        return NextResponse.json(
+          {
+            error: `Could not create upload URL: ${error?.message ?? "unknown error"}`,
+          },
+          { status: 502 },
+        );
+      const projectUrl = process.env.SUPABASE_URL;
+      const endpoint =
+        process.env.SUPABASE_STORAGE_UPLOAD_URL ||
+        (projectUrl
+          ? `${projectUrl.replace(/\.supabase\.co\/?$/, ".storage.supabase.co")}/storage/v1/upload/resumable`
+          : "");
+      if (!endpoint)
+        return NextResponse.json(
+          { error: "Supabase storage endpoint is not configured" },
+          { status: 503 },
+        );
+      return NextResponse.json({
+        endpoint,
+        path: storagePath,
+        token: data.token,
+      });
+    }
+    if (
+      segments.length === 3 &&
+      segments[0] === "admin" &&
+      segments[1] === "upload" &&
+      segments[2] === "complete"
+    ) {
+      const database = getSupabaseAdmin();
+      if (!database)
+        return NextResponse.json(
+          { error: "Supabase is not configured" },
+          { status: 503 },
+        );
+      const body = (await request.json()) as {
+        path?: string;
+        filename?: string;
+        village?: string;
+        size?: number;
+      };
+      const village = VILLAGES.find((item) => item.id === body.village);
+      const size = Number(body.size);
+      if (
+        !village ||
+        !body.path?.startsWith("uploads/") ||
+        !body.filename ||
+        !Number.isSafeInteger(size) ||
+        size <= 0 ||
+        size > MAX_UPLOAD_BYTES
+      ) {
+        return NextResponse.json(
+          { error: "Invalid completed upload" },
+          { status: 400 },
+        );
+      }
+      const { data: storedPdf, error: storageError } = await database.storage
+        .from("electoral-roll-pdfs")
+        .download(body.path);
+      if (storageError || !storedPdf)
+        return NextResponse.json(
+          { error: "Uploaded PDF was not found in storage" },
+          { status: 404 },
+        );
+      const buffer = Buffer.from(await storedPdf.arrayBuffer());
+      if (
+        buffer.length !== size ||
+        buffer.subarray(0, 5).toString() !== "%PDF-"
+      ) {
+        await database.storage.from("electoral-roll-pdfs").remove([body.path]);
+        return NextResponse.json(
+          { error: "Uploaded object failed PDF validation" },
+          { status: 400 },
+        );
+      }
+      const id = `roll-${createHash("sha256").update(body.path).digest("hex").slice(0, 24)}`;
+      const asset = await addPdf(
+        id,
+        body.filename,
+        buffer,
+        village.id,
+        body.path,
+      );
+      scheduleIndexing();
+      return NextResponse.json(asset, { status: 201 });
+    }
     if (
       segments.length === 2 &&
       segments[0] === "admin" &&
