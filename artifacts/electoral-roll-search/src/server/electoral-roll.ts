@@ -171,7 +171,10 @@ async function createDatabaseJob(asset: {
     .insert({ pdf_id: asset.id, status: "queued" })
     .select("id")
     .single();
-  if (error) throw new Error(`Could not create index job: ${error.message}`);
+  if (error) {
+    await database.from("pdf_assets").delete().eq("id", asset.id);
+    throw new Error(`Could not create index job: ${error.message}`);
+  }
   return data.id as string;
 }
 
@@ -1443,32 +1446,67 @@ export async function addPdf(
     : `${baseName}.pdf`;
   const filePath = path.join(pdfDirectory, `${safeId}.pdf`);
   const temporaryPath = `${filePath}.uploading`;
-  await fs.writeFile(temporaryPath, new Uint8Array(data));
-  await fs.rename(temporaryPath, filePath);
-  if (process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN) {
-    await put(`pdfs/${safeId}.pdf`, data, {
-      access: "private",
-      addRandomSuffix: false,
-      allowOverwrite: true,
-      contentType: "application/pdf",
+  const labelPath = path.join(pdfDirectory, `${safeId}.label`);
+  const hadVillageAssignment = Object.prototype.hasOwnProperty.call(
+    villageAssignments,
+    safeId,
+  );
+  const previousVillage = villageAssignments[safeId];
+  try {
+    await fs.writeFile(temporaryPath, new Uint8Array(data));
+    await fs.rename(temporaryPath, filePath);
+    if (process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN) {
+      await put(`pdfs/${safeId}.pdf`, data, {
+        access: "private",
+        addRandomSuffix: false,
+        allowOverwrite: false,
+        contentType: "application/pdf",
+      });
+    }
+    await fs.writeFile(labelPath, safeName);
+    villageAssignments[safeId] = villageId;
+    await writeJson(villagePath, villageAssignments);
+    await createDatabaseJob({
+      id: safeId,
+      name: safeName,
+      villageId,
+      sizeBytes: data.length,
     });
+    return (await listPdfs()).find((pdf) => pdf.id === safeId);
+  } catch (error) {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+    await fs.rm(filePath, { force: true }).catch(() => undefined);
+    await fs.rm(labelPath, { force: true }).catch(() => undefined);
+    if (process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN) {
+      await del(`pdfs/${safeId}.pdf`).catch(() => undefined);
+    }
+    if (hadVillageAssignment) villageAssignments[safeId] = previousVillage;
+    else delete villageAssignments[safeId];
+    await writeJson(villagePath, villageAssignments).catch(() => undefined);
+    throw error;
   }
-  await fs.writeFile(path.join(pdfDirectory, `${safeId}.label`), safeName);
-  villageAssignments[safeId] = villageId;
-  await writeJson(villagePath, villageAssignments);
-  const jobId = await createDatabaseJob({
-    id: safeId,
-    name: safeName,
-    villageId,
-    sizeBytes: data.length,
-  });
-  return (await listPdfs()).find((pdf) => pdf.id === safeId);
 }
 
 export async function processQueuedJobs(limit = 1) {
   const database = getSupabaseAdmin();
   if (!database)
     throw new Error("Supabase is required for the indexing worker");
+
+  const staleBefore = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+  const { error: recoveryError } = await database
+    .from("index_jobs")
+    .update({
+      status: "queued",
+      started_at: null,
+      error: "Recovered after an interrupted indexing attempt",
+    })
+    .eq("status", "extracting")
+    .lt("started_at", staleBefore);
+  if (recoveryError) {
+    throw new Error(
+      `Could not recover stalled index jobs: ${recoveryError.message}`,
+    );
+  }
 
   const { data: jobs, error } = await database
     .from("index_jobs")
@@ -1502,12 +1540,25 @@ export async function processQueuedJobs(limit = 1) {
 
     const temporaryPath = path.join(tmpdir(), `electoral-roll-${asset.id}.pdf`);
     try {
-      const blob = await get(asset.storage_path, { access: "private" });
-      if (!blob) throw new Error("The source PDF is missing from Blob storage");
-      await fs.writeFile(
-        temporaryPath,
-        new Uint8Array(await new Response(blob.stream).arrayBuffer()),
-      );
+      const localPath = path.join(pdfDirectory, `${asset.id}.pdf`);
+      if (
+        await fs
+          .access(localPath)
+          .then(() => true)
+          .catch(() => false)
+      ) {
+        await fs.copyFile(localPath, temporaryPath);
+      } else {
+        const blob = await get(asset.storage_path, { access: "private" });
+        if (!blob)
+          throw new Error(
+            "The source PDF is missing from local and Blob storage",
+          );
+        await fs.writeFile(
+          temporaryPath,
+          new Uint8Array(await new Response(blob.stream).arrayBuffer()),
+        );
+      }
       await fs.mkdir(pdfDirectory, { recursive: true });
       await fs.copyFile(
         temporaryPath,

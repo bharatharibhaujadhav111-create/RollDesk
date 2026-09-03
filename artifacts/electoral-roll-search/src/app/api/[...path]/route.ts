@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { get } from "@vercel/blob";
 import { handleUpload } from "@vercel/blob/client";
 import { after, NextResponse } from "next/server";
@@ -418,10 +419,7 @@ export async function POST(request: Request, context: RouteContext) {
       }
 
       try {
-        const id = path
-          .basename(body.filename, path.extname(body.filename))
-          .replace(/[^a-z0-9-]/gi, "-")
-          .toLowerCase();
+        const id = `roll-${randomUUID()}`;
 
         console.log("[Blob Complete Route] Adding PDF to database:", {
           id,
@@ -475,10 +473,7 @@ export async function POST(request: Request, context: RouteContext) {
           { status: 400 },
         );
       }
-      const id = path
-        .basename(params.filename, path.extname(params.filename))
-        .replace(/[^a-z0-9-]/gi, "-")
-        .toLowerCase();
+      const id = `roll-${randomUUID()}`;
       const asset = await addPdf(id, params.filename, buffer, village.id);
       scheduleIndexing();
       return NextResponse.json(asset, { status: 201 });
