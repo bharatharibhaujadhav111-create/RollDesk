@@ -424,44 +424,88 @@ export default function AdminPage() {
           id: string;
           name: string;
           villageId: string;
-          signedUrl: string;
+          endpoint: string;
+          token: string;
+          storagePath: string;
         };
-        const cloudResult = await new Promise<{ ok: boolean; status: number }>(
-          (resolve, reject) => {
+        const tusUploadUrl = await new Promise<string>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", prepared.endpoint, true);
+          xhr.setRequestHeader("Tus-Resumable", "1.0.0");
+          xhr.setRequestHeader("x-signature", prepared.token);
+          xhr.setRequestHeader("Upload-Length", String(file.size));
+          const encodeMetadata = (value: string) =>
+            btoa(
+              Array.from(new TextEncoder().encode(value), (byte) =>
+                String.fromCharCode(byte),
+              ).join(""),
+            );
+          xhr.setRequestHeader(
+            "Upload-Metadata",
+            `bucketName ${encodeMetadata("electoral-roll-pdfs")},objectName ${encodeMetadata(prepared.storagePath)},contentType ${encodeMetadata("application/pdf")}`,
+          );
+          xhr.onerror = () =>
+            reject(
+              new Error(
+                "Could not start resumable cloud upload. Please retry.",
+              ),
+            );
+          xhr.onload = () => {
+            const location = xhr.getResponseHeader("Location");
+            if (xhr.status !== 201 || !location) {
+              reject(
+                new Error(
+                  `Cloud upload initialization failed (HTTP ${xhr.status})`,
+                ),
+              );
+              return;
+            }
+            resolve(new URL(location, prepared.endpoint).toString());
+          };
+          xhr.send();
+        });
+        const tusChunkSize = 6 * 1024 * 1024;
+        let offset = 0;
+        while (offset < file.size) {
+          const chunk = file.slice(
+            offset,
+            Math.min(file.size, offset + tusChunkSize),
+          );
+          const chunkOffset = offset;
+          offset = await new Promise<number>((resolve, reject) => {
             const xhr = new XMLHttpRequest();
-            xhr.open("POST", prepared.signedUrl, true);
-            xhr.setRequestHeader("Content-Type", "application/pdf");
+            xhr.open("PATCH", tusUploadUrl, true);
+            xhr.setRequestHeader("Tus-Resumable", "1.0.0");
+            xhr.setRequestHeader(
+              "Content-Type",
+              "application/offset+octet-stream",
+            );
+            xhr.setRequestHeader("Upload-Offset", String(chunkOffset));
             xhr.upload.onprogress = (event) => {
               if (!event.lengthComputable) return;
+              const loaded = chunkOffset + event.loaded;
               setUploadProgress({
                 file: file.name,
-                percent: Math.round((event.loaded / event.total) * 100),
-                loadedMB: event.loaded / (1024 * 1024),
+                percent: Math.round((loaded / file.size) * 100),
+                loadedMB: loaded / (1024 * 1024),
                 totalMB,
               });
             };
-            xhr.upload.onerror = () =>
-              reject(
-                new Error("Upload was interrupted mid-transfer. Please retry."),
-              );
             xhr.onerror = () =>
               reject(
                 new Error("Upload was interrupted mid-transfer. Please retry."),
               );
-            xhr.onload = () =>
-              resolve({
-                ok: xhr.status >= 200 && xhr.status < 300,
-                status: xhr.status,
-              });
-            try {
-              xhr.send(file);
-            } catch (sendError) {
-              reject(sendError);
-            }
-          },
-        );
-        if (!cloudResult.ok)
-          throw new Error(`Cloud upload failed (HTTP ${cloudResult.status})`);
+            xhr.onload = () => {
+              const nextOffset = Number(xhr.getResponseHeader("Upload-Offset"));
+              if (xhr.status !== 204 || !Number.isSafeInteger(nextOffset)) {
+                reject(new Error(`Cloud upload failed (HTTP ${xhr.status})`));
+                return;
+              }
+              resolve(nextOffset);
+            };
+            xhr.send(chunk);
+          });
+        }
         const finalizeResponse = await fetch("/api/admin/pdfs/finalize", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -490,7 +534,7 @@ export default function AdminPage() {
         queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });
         return true;
       }
-      if (prepareResponse.status < 500 && prepareResponse.status !== 404) {
+      if (!prepareResponse.ok) {
         const preparedError = (await prepareResponse
           .json()
           .catch(() => null)) as { error?: string } | null;
@@ -499,73 +543,6 @@ export default function AdminPage() {
             `Upload preparation failed (HTTP ${prepareResponse.status})`,
         );
       }
-      const chunkSize = 4 * 1024 * 1024;
-      const chunkCount = Math.ceil(file.size / chunkSize);
-      const uploadId = `roll-${crypto.randomUUID()}`;
-      for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
-        const chunk = file.slice(
-          chunkIndex * chunkSize,
-          Math.min(file.size, (chunkIndex + 1) * chunkSize),
-        );
-        const chunkUrl = `/api/admin/pdfs/chunk?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`;
-        const chunkResult = await new Promise<{
-          ok: boolean;
-          status: number;
-          error?: string;
-        }>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open("POST", chunkUrl, true);
-          xhr.setRequestHeader("Content-Type", "application/pdf");
-          xhr.setRequestHeader("X-Upload-Id", uploadId);
-          xhr.setRequestHeader("X-Chunk-Index", String(chunkIndex));
-          xhr.setRequestHeader("X-Chunk-Count", String(chunkCount));
-          xhr.upload.onprogress = (event) => {
-            if (!event.lengthComputable) return;
-            const loaded = chunkIndex * chunkSize + event.loaded;
-            setUploadProgress({
-              file: file.name,
-              percent: Math.round((loaded / file.size) * 100),
-              loadedMB: loaded / (1024 * 1024),
-              totalMB,
-            });
-          };
-          xhr.onerror = () =>
-            reject(
-              new Error("Upload was interrupted mid-transfer. Please retry."),
-            );
-          xhr.onload = () => {
-            let error: string | undefined;
-            try {
-              error = (JSON.parse(xhr.responseText) as { error?: string })
-                .error;
-            } catch {
-              error = undefined;
-            }
-            resolve({
-              ok: xhr.status >= 200 && xhr.status < 300,
-              status: xhr.status,
-              error,
-            });
-          };
-          xhr.send(chunk);
-        });
-        if (!chunkResult.ok) {
-          throw new Error(
-            chunkResult.error ||
-              `Chunk upload failed (HTTP ${chunkResult.status}); please retry.`,
-          );
-        }
-      }
-      setUploadProgress({
-        file: file.name,
-        percent: 100,
-        loadedMB: totalMB,
-        totalMB,
-      });
-      setNotice(`${file.name} uploaded successfully. Indexing started.`);
-      queryClient.invalidateQueries({ queryKey: getListPdfAssetsQueryKey() });
-      queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });
-      return true;
     } catch (error) {
       const message =
         error instanceof Error

@@ -276,15 +276,24 @@ export async function preparePdfUpload(id: string) {
   const database = getSupabaseAdmin();
   if (!database) return null;
   const storagePath = storageKeyForPdf(id);
+  const supabaseUrl = process.env.SUPABASE_URL;
   const { data, error } = await database.storage
     .from(PDF_BUCKET)
     .createSignedUploadUrl(storagePath);
-  if (error || !data?.signedUrl) {
+  if (error || !data?.token || !supabaseUrl) {
     throw new Error(
-      `Could not prepare cloud upload: ${error?.message || "Supabase did not return a signed upload URL"}`,
+      `Could not prepare cloud upload: ${error?.message || "Supabase did not return a resumable upload token"}`,
     );
   }
-  return { storagePath, signedUrl: data.signedUrl };
+  const url = new URL(supabaseUrl);
+  const storageHost = url.hostname.endsWith(".supabase.co")
+    ? url.hostname.replace(/\.supabase\.co$/, ".storage.supabase.co")
+    : url.hostname;
+  return {
+    storagePath,
+    token: data.token,
+    endpoint: `${url.protocol}//${storageHost}/storage/v1/upload/resumable`,
+  };
 }
 
 export async function finalizePdfUpload(asset: {
@@ -293,85 +302,30 @@ export async function finalizePdfUpload(asset: {
   villageId: string;
   sizeBytes: number;
 }) {
+  if (!/^roll-[a-f0-9-]+$/i.test(asset.id)) {
+    throw new Error("Invalid upload identifier");
+  }
+  if (
+    !Number.isSafeInteger(asset.sizeBytes) ||
+    asset.sizeBytes < 5 ||
+    asset.sizeBytes > STORAGE_UPLOAD_LIMIT_BYTES
+  ) {
+    throw new Error("Invalid uploaded PDF size");
+  }
   await ensurePdfLocal(asset.id);
+  const localPath = path.join(pdfDirectory, `${asset.id}.pdf`);
+  const actualSize = (await fs.stat(localPath)).size;
+  if (actualSize !== asset.sizeBytes) {
+    await fs.rm(localPath, { force: true });
+    throw new Error(
+      `Uploaded PDF size mismatch: expected ${asset.sizeBytes} bytes, received ${actualSize}`,
+    );
+  }
   await createDatabaseJob({
     ...asset,
     storagePath: storageKeyForPdf(asset.id),
   });
   return (await listPdfs()).find((pdf) => pdf.id === asset.id);
-}
-
-export async function appendPdfUploadChunk(asset: {
-  id: string;
-  name: string;
-  villageId: string;
-  chunkIndex: number;
-  chunkCount: number;
-  stream: Readable | AsyncIterable<Uint8Array>;
-}) {
-  await fs.mkdir(pdfDirectory, { recursive: true });
-  await fs.mkdir(storageRoot, { recursive: true });
-  const safeId = asset.id.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
-  if (
-    !safeId ||
-    safeId !== asset.id ||
-    asset.chunkIndex < 0 ||
-    asset.chunkIndex >= asset.chunkCount
-  ) {
-    throw new Error("Invalid chunk upload metadata");
-  }
-  const temporaryPath = path.join(pdfDirectory, `.${safeId}.uploading`);
-  if (asset.chunkIndex === 0) await fs.rm(temporaryPath, { force: true });
-  else {
-    const expectedSize = await fs
-      .stat(temporaryPath)
-      .then((stats) => stats.size)
-      .catch(() => -1);
-    if (expectedSize < 0)
-      throw new Error("Upload chunk is out of order; please retry the upload");
-  }
-  const input =
-    asset.stream instanceof Readable
-      ? asset.stream
-      : Readable.from(asset.stream as AsyncIterable<Uint8Array>);
-  await pipeline(
-    input,
-    fsSync.createWriteStream(temporaryPath, {
-      flags: asset.chunkIndex === 0 ? "w" : "a",
-    }),
-  );
-  if (asset.chunkIndex + 1 < asset.chunkCount) {
-    return { complete: false };
-  }
-  const stats = await fs.stat(temporaryPath);
-  if (stats.size > STORAGE_UPLOAD_LIMIT_BYTES) {
-    await fs.rm(temporaryPath, { force: true });
-    throw new Error("PDF too large. Max upload size is 500MB.");
-  }
-  const head = Buffer.alloc(5);
-  const fd = await fs.open(temporaryPath, "r");
-  const read = await fd.read(head, 0, 5, 0);
-  await fd.close();
-  if (read.bytesRead < 5 || head.toString() !== "%PDF-") {
-    await fs.rm(temporaryPath, { force: true });
-    throw new Error("The uploaded file is not a valid PDF");
-  }
-  const filePath = path.join(pdfDirectory, `${safeId}.pdf`);
-  await fs.rename(temporaryPath, filePath);
-  await fs.writeFile(path.join(pdfDirectory, `${safeId}.label`), asset.name);
-  villageAssignments[safeId] = asset.villageId;
-  await writeJson(villagePath, villageAssignments);
-  await createDatabaseJob({
-    id: safeId,
-    name: asset.name,
-    villageId: asset.villageId,
-    sizeBytes: stats.size,
-    storagePath: filePath,
-  });
-  return {
-    complete: true,
-    asset: (await listPdfs()).find((pdf) => pdf.id === safeId),
-  };
 }
 
 async function persistIndexedPdf(pdfId: string, jobId?: string) {
