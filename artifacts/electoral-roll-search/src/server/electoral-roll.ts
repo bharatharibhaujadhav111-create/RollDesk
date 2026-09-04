@@ -18,7 +18,9 @@ const storageRoot = process.env.VERCEL
   ? path.join(tmpdir(), "electoral-roll-data")
   : projectRoot;
 export const pdfDirectory = process.env.ELECTORAL_ROLL_PDF_DIR
-  ? path.resolve(process.env.ELECTORAL_ROLL_PDF_DIR)
+  ? process.env.VERCEL
+    ? path.join(tmpdir(), "electoral-roll-pdfs")
+    : path.resolve(process.env.ELECTORAL_ROLL_PDF_DIR)
   : process.env.VERCEL
     ? path.join(tmpdir(), "electoral-roll-pdfs")
     : path.join(projectRoot, "pdfs");
