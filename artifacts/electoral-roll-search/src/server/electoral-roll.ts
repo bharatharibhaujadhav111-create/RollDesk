@@ -359,6 +359,10 @@ export async function appendPdfUploadChunk(asset: {
     asset.stream instanceof Readable
       ? asset.stream
       : Readable.from(asset.stream as AsyncIterable<Uint8Array>);
+  const beforeSize =
+    asset.chunkIndex === 0
+      ? 0
+      : ((await fs.stat(temporaryPath).catch(() => null))?.size ?? 0);
   try {
     await pipeline(
       input,
@@ -374,6 +378,13 @@ export async function appendPdfUploadChunk(asset: {
       `Failed to write upload chunk ${asset.chunkIndex + 1}/${asset.chunkCount}: ${
         error instanceof Error ? error.message : String(error)
       }`,
+    );
+  }
+  const afterSize = (await fs.stat(temporaryPath)).size;
+  if (afterSize <= beforeSize) {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+    throw new Error(
+      `Upload chunk ${asset.chunkIndex + 1}/${asset.chunkCount} arrived empty; please retry.`,
     );
   }
   if (asset.chunkIndex + 1 < asset.chunkCount) return { complete: false };

@@ -12,6 +12,7 @@ const nextConfig = {
     serverActions: {
       bodySizeLimit: "500mb",
     },
+    // Keep high so local/dev proxy buffering does not truncate 3 MB upload parts.
     proxyClientMaxBodySize: "500mb",
   },
 };

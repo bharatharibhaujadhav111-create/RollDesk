@@ -410,79 +410,68 @@ export default function AdminPage() {
         loadedMB: 0,
         totalMB,
       });
-      console.log("[PDF Upload] Direct stream upload:", {
+      // Hosts like Vercel reject single request bodies above ~4.5 MB (HTTP 413).
+      // Upload in 3 MB chunks so every request stays under that platform limit.
+      const chunkSize = 3 * 1024 * 1024;
+      const chunkCount = Math.ceil(file.size / chunkSize) || 1;
+      const uploadId = `roll-${crypto.randomUUID()}`;
+      console.log("[PDF Upload] Chunked upload:", {
         uploadName,
+        uploadId,
         size: file.size,
         sizeMB: totalMB.toFixed(2),
+        chunkCount,
+        chunkSize,
       });
 
-      const streamUrl = `/api/admin/pdfs?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`;
-      const streamResult = await new Promise<{
-        ok: boolean;
-        status: number;
-        error?: string;
-      }>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", streamUrl, true);
-        xhr.setRequestHeader("Content-Type", "application/pdf");
-        xhr.setRequestHeader("X-PDF-Stream", "1");
-        xhr.setRequestHeader("X-PDF-Size", String(file.size));
-        xhr.upload.onprogress = (event) => {
-          if (!event.lengthComputable) return;
-          setUploadProgress({
-            file: file.name,
-            percent: Math.round((event.loaded / event.total) * 100),
-            loadedMB: event.loaded / (1024 * 1024),
-            totalMB,
-          });
-        };
-        xhr.upload.onerror = () =>
-          reject(
-            new Error("Upload was interrupted mid-transfer. Please retry."),
-          );
-        xhr.onerror = () =>
-          reject(
-            new Error("Upload was interrupted mid-transfer. Please retry."),
-          );
-        xhr.onload = () => {
-          let error: string | undefined;
-          try {
-            const parsed = JSON.parse(xhr.responseText) as {
-              error?: string;
-              hint?: string;
-            };
-            error = [parsed.error, parsed.hint].filter(Boolean).join(" ");
-          } catch {
-            error = xhr.responseText?.slice(0, 240) || undefined;
-          }
-          resolve({
-            ok: xhr.status >= 200 && xhr.status < 300,
-            status: xhr.status,
-            error,
-          });
-        };
-        try {
-          xhr.send(file);
-        } catch (sendError) {
-          reject(sendError);
-        }
-      });
-
-      if (!streamResult.ok) {
-        if (streamResult.status === 401 || streamResult.status === 403) {
-          throw new Error(
-            "Server rejected credentials — refresh the page and try again.",
-          );
-        }
-        if (streamResult.status === 413) {
-          throw new Error(
-            "File exceeded size limits — try compressing the PDF or split to fewer pages.",
-          );
-        }
-        throw new Error(
-          streamResult.error ||
-            `Upload failed (HTTP ${streamResult.status}). Please retry.`,
+      for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
+        const start = chunkIndex * chunkSize;
+        const end = Math.min(file.size, start + chunkSize);
+        const chunk = file.slice(start, end);
+        const chunkResponse = await fetch(
+          `/api/admin/pdfs/chunk?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/pdf",
+              "X-PDF-Stream": "1",
+              "X-Upload-Id": uploadId,
+              "X-Chunk-Index": String(chunkIndex),
+              "X-Chunk-Count": String(chunkCount),
+              "X-Upload-Total-Size": String(file.size),
+            },
+            body: chunk,
+          },
         );
+        const chunkBody = (await chunkResponse.json().catch(() => null)) as {
+          error?: string;
+          hint?: string;
+        } | null;
+        if (!chunkResponse.ok) {
+          if (chunkResponse.status === 401 || chunkResponse.status === 403) {
+            throw new Error(
+              "Server rejected credentials — refresh the page and try again.",
+            );
+          }
+          if (chunkResponse.status === 413) {
+            throw new Error(
+              [chunkBody?.error, chunkBody?.hint]
+                .filter(Boolean)
+                .join(" ") ||
+                "A single upload part was rejected as too large. Please retry.",
+            );
+          }
+          throw new Error(
+            [chunkBody?.error, chunkBody?.hint].filter(Boolean).join(" ") ||
+              `Chunk ${chunkIndex + 1}/${chunkCount} failed (HTTP ${chunkResponse.status}); please retry.`,
+          );
+        }
+        setUploadProgress({
+          file: file.name,
+          percent: Math.round((end / file.size) * 100),
+          loadedMB: end / (1024 * 1024),
+          totalMB,
+        });
       }
 
       setUploadProgress({
@@ -503,10 +492,7 @@ export default function AdminPage() {
             ? error
             : "The upload was interrupted. Please try again.";
       let message = raw;
-      if (/413|too large|payload/i.test(raw)) {
-        message =
-          "File exceeded size limits — try compressing the PDF or split to fewer pages.";
-      } else if (/401|403|credentials|authentication/i.test(raw)) {
+      if (/401|403|credentials|authentication/i.test(raw)) {
         message =
           "Server rejected credentials — refresh the page and try again.";
       } else if (/not a valid pdf|magic header/i.test(raw)) {
