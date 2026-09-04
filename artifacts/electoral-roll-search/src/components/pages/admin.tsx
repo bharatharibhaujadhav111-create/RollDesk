@@ -111,6 +111,31 @@ function postUploadChunk(options: {
   });
 }
 
+async function postUploadChunkWithRetry(options: {
+  url: string;
+  chunk: Blob;
+  uploadId: string;
+  chunkIndex: number;
+  chunkCount: number;
+  totalSize: number;
+  onProgress: (sentBytes: number) => void;
+}) {
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await postUploadChunk(options);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const transient =
+        /HTTP (408|429|5\d\d)/.test(message) ||
+        /timed out|interrupted mid-transfer/i.test(message);
+      if (!transient || attempt === maxAttempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+    }
+  }
+  throw new Error("Upload retry limit reached.");
+}
+
 function StatSkeleton() {
   return (
     <div className="h-[116px] animate-pulse rounded-xl border border-border bg-card/75" />
@@ -490,7 +515,7 @@ export default function AdminPage() {
       for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
         const start = chunkIndex * chunkSize;
         const end = Math.min(file.size, start + chunkSize);
-        await postUploadChunk({
+        await postUploadChunkWithRetry({
           url: `/api/admin/pdfs/chunk?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`,
           chunk: file.slice(start, end),
           uploadId,
