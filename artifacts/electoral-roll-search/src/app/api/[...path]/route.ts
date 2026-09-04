@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import { after, NextResponse } from "next/server";
 import {
@@ -81,12 +80,13 @@ function errorResponse(error: unknown) {
   if (/not a valid pdf/i.test(rawMessage)) {
     return NextResponse.json({ error: rawMessage }, { status: 400 });
   }
-  if (/invalid upload|size mismatch/i.test(rawMessage)) {
+  if (/invalid upload|size mismatch|out of order/i.test(rawMessage)) {
     return NextResponse.json({ error: rawMessage }, { status: 400 });
   }
   if (/cloud upload|supabase|storage/i.test(rawMessage)) {
     return NextResponse.json({ error: rawMessage }, { status: 503 });
   }
+  console.error("[API] Unhandled error", rawMessage);
   return NextResponse.json({ error: rawMessage }, { status: 500 });
 }
 
@@ -289,16 +289,25 @@ export async function POST(request: Request, context: RouteContext) {
           { status: 400 },
         );
       }
+      const reader = request.body.getReader();
+      const stream = (async function* bodyToBytes() {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value?.length) yield value;
+        }
+      })();
       const result = await appendPdfUploadChunk({
         id: uploadId,
         name: path.basename(params.filename),
         villageId: params.village,
         chunkIndex,
         chunkCount,
-        stream: Readable.fromWeb(
-          request.body as import("node:stream/web").ReadableStream,
-        ),
+        stream,
       });
+      if (result.complete) {
+        scheduleIndexing("rebuild", result.asset?.id ?? uploadId);
+      }
       return NextResponse.json(result, { status: result.complete ? 201 : 202 });
     }
     if (

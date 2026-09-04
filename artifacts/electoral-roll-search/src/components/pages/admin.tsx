@@ -415,17 +415,100 @@ export default function AdminPage() {
         size: file.size,
         sizeMB: totalMB.toFixed(2),
       });
-      const fallbackChunkSize = 4 * 1024 * 1024;
-      const fallbackChunkCount = Math.ceil(file.size / fallbackChunkSize);
-      const fallbackUploadId = `roll-${crypto.randomUUID()}`;
-      for (
-        let chunkIndex = 0;
-        chunkIndex < fallbackChunkCount;
-        chunkIndex += 1
-      ) {
+
+      const streamUrl = `/api/admin/pdfs?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`;
+      const streamResult = await new Promise<{
+        ok: boolean;
+        status: number;
+        body: { error?: string; hint?: string } | null;
+      }>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", streamUrl, true);
+        xhr.setRequestHeader("Content-Type", "application/pdf");
+        xhr.setRequestHeader("X-PDF-Stream", "1");
+        xhr.setRequestHeader("X-PDF-Size", String(file.size));
+        xhr.responseType = "json";
+        xhr.upload.onprogress = (event) => {
+          if (!event.lengthComputable) return;
+          setUploadProgress({
+            file: file.name,
+            percent: Math.round((event.loaded / event.total) * 100),
+            loadedMB: event.loaded / (1024 * 1024),
+            totalMB,
+          });
+        };
+        xhr.upload.onerror = () =>
+          reject(
+            new Error("Upload was interrupted mid-transfer. Please retry."),
+          );
+        xhr.onerror = () =>
+          reject(
+            new Error("Upload was interrupted mid-transfer. Please retry."),
+          );
+        xhr.onload = () => {
+          const body =
+            xhr.response && typeof xhr.response === "object"
+              ? (xhr.response as { error?: string; hint?: string })
+              : null;
+          resolve({
+            ok: xhr.status >= 200 && xhr.status < 300,
+            status: xhr.status,
+            body,
+          });
+        };
+        try {
+          xhr.send(file);
+        } catch (sendError) {
+          reject(sendError);
+        }
+      });
+
+      if (streamResult.ok) {
+        setUploadProgress({
+          file: file.name,
+          percent: 100,
+          loadedMB: totalMB,
+          totalMB,
+        });
+        setNotice(`${file.name} uploaded successfully. Indexing started.`);
+        queryClient.invalidateQueries({ queryKey: getListPdfAssetsQueryKey() });
+        queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });
+        return true;
+      }
+
+      // Fall back to local chunked upload when the single-stream path is rejected
+      // for size limits (common on some hosts) — not for auth / validation errors.
+      const canChunkFallback =
+        streamResult.status === 413 ||
+        streamResult.status === 500 ||
+        streamResult.status === 502 ||
+        streamResult.status === 504;
+      if (!canChunkFallback) {
+        if (streamResult.status === 401 || streamResult.status === 403) {
+          throw new Error(
+            "Server rejected credentials — refresh the page and try again.",
+          );
+        }
+        throw new Error(
+          [streamResult.body?.error, streamResult.body?.hint]
+            .filter(Boolean)
+            .join(" ") ||
+            `Upload failed (HTTP ${streamResult.status}). Please retry.`,
+        );
+      }
+
+      console.warn(
+        "[PDF Upload] Stream upload failed; falling back to chunks",
+        streamResult.status,
+        streamResult.body?.error,
+      );
+      const chunkSize = 2 * 1024 * 1024;
+      const chunkCount = Math.ceil(file.size / chunkSize) || 1;
+      const uploadId = `roll-${crypto.randomUUID()}`;
+      for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
         const chunk = file.slice(
-          chunkIndex * fallbackChunkSize,
-          Math.min(file.size, (chunkIndex + 1) * fallbackChunkSize),
+          chunkIndex * chunkSize,
+          Math.min(file.size, (chunkIndex + 1) * chunkSize),
         );
         const chunkResponse = await fetch(
           `/api/admin/pdfs/chunk?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`,
@@ -434,9 +517,9 @@ export default function AdminPage() {
             headers: {
               "Content-Type": "application/pdf",
               "X-PDF-Stream": "1",
-              "X-Upload-Id": fallbackUploadId,
+              "X-Upload-Id": uploadId,
               "X-Chunk-Index": String(chunkIndex),
-              "X-Chunk-Count": String(fallbackChunkCount),
+              "X-Chunk-Count": String(chunkCount),
             },
             body: chunk,
           },
@@ -452,7 +535,7 @@ export default function AdminPage() {
         }
         const uploadedBytes = Math.min(
           file.size,
-          (chunkIndex + 1) * fallbackChunkSize,
+          (chunkIndex + 1) * chunkSize,
         );
         setUploadProgress({
           file: file.name,
@@ -471,199 +554,26 @@ export default function AdminPage() {
       queryClient.invalidateQueries({ queryKey: getListPdfAssetsQueryKey() });
       queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });
       return true;
-      const prepareResponse = await fetch(
-        `/api/admin/pdfs/upload-url?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`,
-        { method: "POST" },
-      );
-      if (prepareResponse.ok) {
-        const prepared = (await prepareResponse.json()) as {
-          id: string;
-          name: string;
-          villageId: string;
-          endpoint: string;
-          token: string;
-          storagePath: string;
-        };
-        const tusUploadUrl = await new Promise<string>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open("POST", prepared.endpoint, true);
-          xhr.setRequestHeader("Tus-Resumable", "1.0.0");
-          xhr.setRequestHeader("x-signature", prepared.token);
-          xhr.setRequestHeader("Upload-Length", String(file.size));
-          const encodeMetadata = (value: string) =>
-            btoa(
-              Array.from(new TextEncoder().encode(value), (byte) =>
-                String.fromCharCode(byte),
-              ).join(""),
-            );
-          xhr.setRequestHeader(
-            "Upload-Metadata",
-            `bucketName ${encodeMetadata("electoral-roll-pdfs")},objectName ${encodeMetadata(prepared.storagePath)},contentType ${encodeMetadata("application/pdf")}`,
-          );
-          xhr.onerror = () =>
-            reject(
-              new Error(
-                "Could not start resumable cloud upload. Please retry.",
-              ),
-            );
-          xhr.onload = () => {
-            const location = xhr.getResponseHeader("Location");
-            if (xhr.status !== 201 || !location) {
-              reject(
-                new Error(
-                  `Cloud upload initialization failed (HTTP ${xhr.status})`,
-                ),
-              );
-              return;
-            }
-            resolve(new URL(location, prepared.endpoint).toString());
-          };
-          xhr.send();
-        });
-        const tusChunkSize = 6 * 1024 * 1024;
-        let offset = 0;
-        while (offset < file.size) {
-          const chunk = file.slice(
-            offset,
-            Math.min(file.size, offset + tusChunkSize),
-          );
-          const chunkOffset = offset;
-          offset = await new Promise<number>((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.open("PATCH", tusUploadUrl, true);
-            xhr.setRequestHeader("Tus-Resumable", "1.0.0");
-            xhr.setRequestHeader(
-              "Content-Type",
-              "application/offset+octet-stream",
-            );
-            xhr.setRequestHeader("Upload-Offset", String(chunkOffset));
-            xhr.upload.onprogress = (event) => {
-              if (!event.lengthComputable) return;
-              const loaded = chunkOffset + event.loaded;
-              setUploadProgress({
-                file: file.name,
-                percent: Math.round((loaded / file.size) * 100),
-                loadedMB: loaded / (1024 * 1024),
-                totalMB,
-              });
-            };
-            xhr.onerror = () =>
-              reject(
-                new Error("Upload was interrupted mid-transfer. Please retry."),
-              );
-            xhr.onload = () => {
-              const nextOffset = Number(xhr.getResponseHeader("Upload-Offset"));
-              if (xhr.status !== 204 || !Number.isSafeInteger(nextOffset)) {
-                reject(new Error(`Cloud upload failed (HTTP ${xhr.status})`));
-                return;
-              }
-              resolve(nextOffset);
-            };
-            xhr.send(chunk);
-          });
-        }
-        const finalizeResponse = await fetch("/api/admin/pdfs/finalize", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            id: prepared.id,
-            name: prepared.name,
-            villageId: prepared.villageId,
-            sizeBytes: file.size,
-          }),
-        });
-        const finalized = (await finalizeResponse.json()) as { error?: string };
-        if (!finalizeResponse.ok) {
-          throw new Error(
-            finalized.error ||
-              `Finalize failed (HTTP ${finalizeResponse.status})`,
-          );
-        }
-        setUploadProgress({
-          file: file.name,
-          percent: 100,
-          loadedMB: totalMB,
-          totalMB,
-        });
-        setNotice(`${file.name} uploaded successfully. Indexing started.`);
-        queryClient.invalidateQueries({ queryKey: getListPdfAssetsQueryKey() });
-        queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });
-        return true;
-      }
-      if (!prepareResponse.ok && prepareResponse.status !== 501) {
-        const rawResponse = await prepareResponse.text();
-        let preparedError: { error?: string; hint?: string } | null = null;
-        try {
-          preparedError = JSON.parse(rawResponse) as {
-            error?: string;
-            hint?: string;
-          };
-        } catch {
-          preparedError = null;
-        }
-        throw new Error(
-          [preparedError?.error, preparedError?.hint]
-            .filter(Boolean)
-            .join(" ") ||
-            `Upload preparation failed (HTTP ${prepareResponse.status}). Response: ${rawResponse.slice(0, 240) || "empty response"}`,
-        );
-      }
-      const chunkSize = 4 * 1024 * 1024;
-      const chunkCount = Math.ceil(file.size / chunkSize);
-      const uploadId = `roll-${crypto.randomUUID()}`;
-      for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
-        const chunk = file.slice(
-          chunkIndex * chunkSize,
-          Math.min(file.size, (chunkIndex + 1) * chunkSize),
-        );
-        const chunkUrl = `/api/admin/pdfs/chunk?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`;
-        const chunkResponse = await fetch(chunkUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/pdf",
-            "X-PDF-Stream": "1",
-            "X-Upload-Id": fallbackUploadId,
-            "X-Chunk-Index": String(chunkIndex),
-            "X-Chunk-Count": String(fallbackChunkCount),
-          },
-          body: chunk,
-        });
-        const chunkBody = (await chunkResponse.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        if (!chunkResponse.ok) {
-          throw new Error(
-            chunkBody?.error ||
-              `Chunk upload failed (HTTP ${chunkResponse.status}); please retry.`,
-          );
-        }
-        setUploadProgress({
-          file: file.name,
-          percent: Math.round(((chunkIndex + 1) / fallbackChunkCount) * 100),
-          loadedMB:
-            Math.min(file.size, (chunkIndex + 1) * fallbackChunkSize) /
-            (1024 * 1024),
-          totalMB,
-        });
-      }
-      setUploadProgress({
-        file: file.name,
-        percent: 100,
-        loadedMB: totalMB,
-        totalMB,
-      });
-      setNotice(`${file.name} uploaded successfully. Indexing started.`);
-      queryClient.invalidateQueries({ queryKey: getListPdfAssetsQueryKey() });
-      queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });
-      return true;
     } catch (error) {
-      const message =
+      const raw =
         error instanceof Error
           ? error.message
           : typeof error === "string"
             ? error
             : "The upload was interrupted. Please try again.";
-      console.error("[PDF Upload] Fatal error:", message);
+      let message = raw;
+      if (/413|too large|payload/i.test(raw)) {
+        message =
+          "File exceeded size limits — try compressing the PDF or split to fewer pages.";
+      } else if (/401|403|credentials|authentication/i.test(raw)) {
+        message =
+          "Server rejected credentials — refresh the page and try again.";
+      } else if (/not a valid pdf|magic header/i.test(raw)) {
+        message = "Not a valid PDF (magic header mismatch).";
+      } else if (/interrupted|network error/i.test(raw)) {
+        message = "Upload was interrupted mid-transfer. Please retry.";
+      }
+      console.error("[PDF Upload] Fatal error:", raw);
       setUploadError(`Upload failed: ${message}`);
       return false;
     }
@@ -1046,6 +956,7 @@ export default function AdminPage() {
             data-testid={
               uploadError ? "error-admin-action" : "status-admin-action"
             }
+            aria-live="polite"
           >
             <span>{uploadError || notice}</span>
             <button

@@ -341,6 +341,16 @@ export async function appendPdfUploadChunk(asset: {
   stream: Readable | AsyncIterable<Uint8Array>;
 }) {
   await fs.mkdir(pdfDirectory, { recursive: true });
+  await fs.mkdir(storageRoot, { recursive: true });
+  // Load village map before mutating it so a first-chunk request cannot wipe
+  // existing assignments when ensureStorage has not run yet.
+  if (!initialized) {
+    try {
+      villageAssignments = await readJson<Record<string, string>>(villagePath);
+    } catch {
+      villageAssignments = villageAssignments ?? {};
+    }
+  }
   const safeId = asset.id.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
   if (
     !/^roll-[a-f0-9-]+$/i.test(safeId) ||
@@ -350,7 +360,7 @@ export async function appendPdfUploadChunk(asset: {
   ) {
     throw new Error("Invalid upload chunk metadata");
   }
-  const temporaryPath = path.join(pdfDirectory, `.${safeId}.uploading`);
+  const temporaryPath = path.join(pdfDirectory, `${safeId}.part`);
   if (asset.chunkIndex === 0) await fs.rm(temporaryPath, { force: true });
   else if (!(await fs.stat(temporaryPath).catch(() => null))) {
     throw new Error("Upload chunk is out of order; please retry the upload");
@@ -359,12 +369,23 @@ export async function appendPdfUploadChunk(asset: {
     asset.stream instanceof Readable
       ? asset.stream
       : Readable.from(asset.stream as AsyncIterable<Uint8Array>);
-  await pipeline(
-    input,
-    fsSync.createWriteStream(temporaryPath, {
-      flags: asset.chunkIndex === 0 ? "w" : "a",
-    }),
-  );
+  try {
+    await pipeline(
+      input,
+      fsSync.createWriteStream(temporaryPath, {
+        flags: asset.chunkIndex === 0 ? "w" : "a",
+      }),
+    );
+  } catch (error) {
+    if (asset.chunkIndex === 0) {
+      await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+    }
+    throw new Error(
+      `Failed to write upload chunk ${asset.chunkIndex + 1}/${asset.chunkCount}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
   if (asset.chunkIndex + 1 < asset.chunkCount) return { complete: false };
   const stats = await fs.stat(temporaryPath);
   if (stats.size > STORAGE_UPLOAD_LIMIT_BYTES) {
@@ -391,9 +412,24 @@ export async function appendPdfUploadChunk(asset: {
     sizeBytes: stats.size,
     storagePath: filePath,
   });
+  const villageMeta = VILLAGES.find((item) => item.id === asset.villageId);
+  // Avoid listPdfs()/getPageCount during the upload response — that path can
+  // OOM or time out on large electoral rolls and surface as an opaque HTTP 500.
   return {
     complete: true,
-    asset: (await listPdfs()).find((pdf) => pdf.id === safeId),
+    asset: {
+      id: safeId,
+      name: asset.name,
+      villageId: asset.villageId,
+      villageName: villageMeta?.name ?? "Unknown",
+      villageNameMr: villageMeta?.nameMr ?? "",
+      sizeBytes: stats.size,
+      pageCount: 1,
+      uploadedAt: new Date().toISOString(),
+      status: "queued",
+      indexedRecords: 0,
+      fileUrl: `/api/files/${encodeURIComponent(safeId)}`,
+    },
   };
 }
 
