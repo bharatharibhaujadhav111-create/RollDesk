@@ -1,6 +1,6 @@
 import "server-only";
 
-export function getSupabaseAdmin(): null {
+export function getSupabaseAdmin(): any {
   return null;
 }
 

@@ -12,7 +12,7 @@ import { getSupabaseAdmin } from "@/server/local-backend";
 
 const execFileAsync = promisify(execFile);
 
-const serviceRoot = path.resolve(process.cwd());
+const serviceRoot = path.resolve(/* turbopackIgnore: true */ process.cwd());
 const projectRoot = path.resolve(serviceRoot, "../..");
 const storageRoot = process.env.VERCEL
   ? path.join(tmpdir(), "electoral-roll-data")
