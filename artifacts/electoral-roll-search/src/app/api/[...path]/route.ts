@@ -169,9 +169,9 @@ export async function POST(request: Request, context: RouteContext) {
       return NextResponse.json(
         {
           error:
-            "There is only ONE upload endpoint: use POST /api/admin/pdfs with the raw PDF body (any size). Query params: village=ID&filename=ORIGINAL_NAME. PDFs are stored locally in ./data/pdfs/ on the app server. Supabase is used only for DB/indexing of voter records, never for file storage.",
+            "There is only ONE upload endpoint: use POST /api/admin/pdfs with the raw PDF body (any size). Query params: village=ID&filename=ORIGINAL_NAME. PDFs are stored directly in ./pdfs/ on the app server. Supabase is used only for DB/indexing of voter records, never for file storage.",
           uploadEndpoint: "/api/admin/pdfs",
-          storageLocation: "local filesystem (data/pdfs)",
+          storageLocation: "local filesystem (pdfs)",
           supabaseUsedFor: "voter database + index_jobs queue",
         },
         { status: 410 },
@@ -192,7 +192,9 @@ export async function POST(request: Request, context: RouteContext) {
       }
       if (!request.body) {
         return NextResponse.json(
-          { error: "No PDF data received. Please choose a PDF file and retry." },
+          {
+            error: "No PDF data received. Please choose a PDF file and retry.",
+          },
           { status: 400 },
         );
       }

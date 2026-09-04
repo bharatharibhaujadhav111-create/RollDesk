@@ -22,11 +22,6 @@ export const pdfDirectory = process.env.ELECTORAL_ROLL_PDF_DIR
   : process.env.VERCEL
     ? path.join(tmpdir(), "electoral-roll-pdfs")
     : path.join(projectRoot, "pdfs");
-export const chunkDirectory = process.env.ELECTORAL_ROLL_CHUNK_DIR
-  ? path.resolve(process.env.ELECTORAL_ROLL_CHUNK_DIR)
-  : process.env.VERCEL
-    ? path.join(tmpdir(), "electoral-roll-chunks")
-    : path.join(projectRoot, "chunks");
 const indexPath = path.join(storageRoot, "pdf-index.json");
 const statePath = path.join(storageRoot, "pdf-index-state.json");
 const villagePath = path.join(storageRoot, "pdf-villages.json");
@@ -42,57 +37,6 @@ function addWarning(message: string) {
   if (state.warnings.includes(message)) return;
   if (state.warnings.length < 50) state.warnings.push(message);
   else state.warnings[state.warnings.length - 1] = message;
-}
-
-export async function mirrorPdfToStorage(
-  localPath: string,
-  storageKey: string,
-): Promise<"ok" | "skipped" | "failed-with-warning"> {
-  const database = getSupabaseAdmin();
-  if (!database) {
-    addWarning(
-      "Supabase admin client is not configured. PDF was saved locally only and will be lost if the server restarts on Vercel.",
-    );
-    return "skipped";
-  }
-  try {
-    const stream = fsSync.createReadStream(localPath);
-    const { data, error } = await database.storage
-      .from(PDF_BUCKET)
-      .upload(storageKey, stream as unknown as File, {
-        cacheControl: "3600",
-        upsert: true,
-        contentType: "application/pdf",
-        duplex: "half",
-      } as unknown as Parameters<
-        ReturnType<ReturnType<typeof database.storage.from>["upload"]>
-      >[2]);
-    void data;
-    if (error) {
-      const isMissingBucket =
-        /bucket.*not.*found|does.*not.*exist|Bucket not found/i.test(
-          error.message,
-        );
-      if (isMissingBucket) {
-        addWarning(
-          `Supabase Storage bucket "${PDF_BUCKET}" does not exist or is not accessible. PDF saved locally only. Create the "${PDF_BUCKET}" bucket in Supabase to enable durability across Vercel restarts.`,
-        );
-        return "failed-with-warning";
-      }
-      addWarning(
-        `Failed to mirror PDF to Supabase Storage (${storageKey}): ${error.message}. Local copy remains valid.`,
-      );
-      return "failed-with-warning";
-    }
-    return "ok";
-  } catch (error) {
-    addWarning(
-      `Unexpected error while mirroring PDF to Supabase Storage (${storageKey}): ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-    return "failed-with-warning";
-  }
 }
 
 export async function ensurePdfLocal(pdfId: string): Promise<string> {
@@ -141,8 +85,7 @@ export async function ensurePdfLocal(pdfId: string): Promise<string> {
       .download(storageKey);
     if (error || !data) {
       throw new Error(
-        error?.message ||
-          `Supabase Storage returned no data for ${storageKey}`,
+        error?.message || `Supabase Storage returned no data for ${storageKey}`,
       );
     }
     const arrayBuffer = await data.arrayBuffer();
@@ -540,19 +483,22 @@ function wordScore(query: string, target: string) {
   const prefixMatches = qWords.filter((part) =>
     tWords.some((word) => word.startsWith(part)),
   ).length;
-  const prefixBoost = prefixMatches / Math.max(qWords.length, 1) * 0.04;
+  const prefixBoost = (prefixMatches / Math.max(qWords.length, 1)) * 0.04;
   const scores = qWords.map((part) => {
     const best = tWords.reduce((current, targetWord) => {
       const distance = editDistance(part, targetWord);
       const maxLen = Math.max(1, part.length, targetWord.length);
       const fuzzy = 1 - distance / maxLen;
       const phonetic = soundex(part) === soundex(targetWord) ? 0.74 : 0;
-      const prefix =
-        targetWord.startsWith(part) ? 0.96
-          : part.startsWith(targetWord) ? 0.92
-            : part.length >= 2 && targetWord.startsWith(part.slice(0, 2)) ? 0.86
-              : targetWord.includes(part) ? 0.8
-                : 0;
+      const prefix = targetWord.startsWith(part)
+        ? 0.96
+        : part.startsWith(targetWord)
+          ? 0.92
+          : part.length >= 2 && targetWord.startsWith(part.slice(0, 2))
+            ? 0.86
+            : targetWord.includes(part)
+              ? 0.8
+              : 0;
       return Math.max(current, fuzzy, phonetic, prefix);
     }, 0);
     return best;
@@ -572,19 +518,22 @@ function normalizedWordScore(query: string, target: string) {
   const prefixMatches = qWords.filter((part) =>
     tWords.some((word) => word.startsWith(part)),
   ).length;
-  const prefixBoost = prefixMatches / Math.max(qWords.length, 1) * 0.04;
+  const prefixBoost = (prefixMatches / Math.max(qWords.length, 1)) * 0.04;
   const scores = qWords.map((part) =>
     tWords.reduce((current, targetWord) => {
       const distance = editDistance(part, targetWord);
       const maxLen = Math.max(1, part.length, targetWord.length);
       const fuzzy = 1 - distance / maxLen;
       const phonetic = soundex(part) === soundex(targetWord) ? 0.74 : 0;
-      const prefix =
-        targetWord.startsWith(part) ? 0.96
-          : part.startsWith(targetWord) ? 0.92
-            : part.length >= 2 && targetWord.startsWith(part.slice(0, 2)) ? 0.86
-              : targetWord.includes(part) ? 0.8
-                : 0;
+      const prefix = targetWord.startsWith(part)
+        ? 0.96
+        : part.startsWith(targetWord)
+          ? 0.92
+          : part.length >= 2 && targetWord.startsWith(part.slice(0, 2))
+            ? 0.86
+            : targetWord.includes(part)
+              ? 0.8
+              : 0;
       return Math.max(current, fuzzy, phonetic, prefix);
     }, 0),
   );
@@ -1163,6 +1112,33 @@ async function extractPdfPages(
   return { totalPages: pages, ocrPages };
 }
 
+async function getOcrLanguages() {
+  if (!ocrLanguagePromise) {
+    ocrLanguagePromise = execFileAsync("tesseract", ["--list-langs"])
+      .then(({ stdout }) => {
+        const languages = new Set(
+          stdout
+            .split(/\r?\n/)
+            .map((value) => value.trim())
+            .filter(
+              (value) => value && !/^list of available languages/i.test(value),
+            ),
+        );
+        if (languages.has("mar") && languages.has("eng")) return "mar+eng";
+        if (languages.has("mar")) return "mar";
+        if (languages.has("eng")) return "eng";
+        throw new Error(
+          "Tesseract has no usable Marathi or English language data",
+        );
+      })
+      .catch((error) => {
+        ocrLanguagePromise = null;
+        throw error;
+      });
+  }
+  return ocrLanguagePromise;
+}
+
 async function writeJson(filePath: string, value: unknown) {
   const temporaryPath = `${filePath}.tmp`;
   const content = JSON.stringify(value, null, 2);
@@ -1206,33 +1182,6 @@ function canonicalFieldLabel(label: string) {
   if (/^(?:age|\u0935\u092f)$/.test(value)) return "age";
   if (/^(?:gender|sex|\u0932\u093f\u0902\u0917)$/.test(value)) return "gender";
   return value;
-}
-
-async function getOcrLanguages() {
-  if (!ocrLanguagePromise) {
-    ocrLanguagePromise = execFileAsync("tesseract", ["--list-langs"])
-      .then(({ stdout }) => {
-        const languages = new Set(
-          stdout
-            .split(/\r?\n/)
-            .map((value) => value.trim())
-            .filter(
-              (value) => value && !/^list of available languages/i.test(value),
-            ),
-        );
-        if (languages.has("mar") && languages.has("eng")) return "mar+eng";
-        if (languages.has("mar")) return "mar";
-        if (languages.has("eng")) return "eng";
-        throw new Error(
-          "Tesseract has no usable Marathi or English language data",
-        );
-      })
-      .catch((error) => {
-        ocrLanguagePromise = null;
-        throw error;
-      });
-  }
-  return ocrLanguagePromise;
 }
 
 async function readJson<T>(filePath: string): Promise<T> {
@@ -1284,7 +1233,6 @@ async function refreshDatabaseRecords(force = false) {
 export async function ensureStorage() {
   if (initialized) return;
   await fs.mkdir(pdfDirectory, { recursive: true });
-  await fs.mkdir(chunkDirectory, { recursive: true });
   await fs.mkdir(storageRoot, { recursive: true });
   let indexWasMissing = false;
   try {
@@ -1597,10 +1545,11 @@ export async function getSuggestions(query: string) {
       }
     }
     if (record.epicNumber && document.epicNumber) {
-      const epicScore =
-        document.epicNumber.startsWith(normalized) ? 0.99
-          : document.epicNumber.includes(normalized) ? 0.9
-            : normalizedWordScore(normalized, document.epicNumber);
+      const epicScore = document.epicNumber.startsWith(normalized)
+        ? 0.99
+        : document.epicNumber.includes(normalized)
+          ? 0.9
+          : normalizedWordScore(normalized, document.epicNumber);
       if (epicScore >= 0.6) {
         const existing = epicMap.get(record.epicNumber);
         if (!existing || epicScore > existing.score) {
@@ -1757,7 +1706,9 @@ export async function addPdfFromStream(
   let renamed = false;
   try {
     const input =
-      stream instanceof Readable ? stream : Readable.from(stream as AsyncIterable<Uint8Array>);
+      stream instanceof Readable
+        ? stream
+        : Readable.from(stream as AsyncIterable<Uint8Array>);
     await pipeline(input, fsSync.createWriteStream(temporaryPath));
     const stats = await fs.stat(temporaryPath);
     if (stats.size > STORAGE_UPLOAD_LIMIT_BYTES) {
@@ -1779,24 +1730,17 @@ export async function addPdfFromStream(
     await fs.writeFile(labelPath, safeName);
     villageAssignments[safeId] = villageId;
     await writeJson(villagePath, villageAssignments);
-    const storageKey = storageKeyForPdf(safeId);
-    const mirrorStatus = await mirrorPdfToStorage(filePath, storageKey);
-    const storagePathForDb =
-      mirrorStatus === "ok" || mirrorStatus === "failed-with-warning"
-        ? storageKey
-        : path.join(pdfDirectory, `${safeId}.pdf`);
-    console.log("[PDF Upload] Post-write mirror:", {
+    console.log("[PDF Upload] Saved locally:", {
       pdfId: safeId,
       sizeBytes: stats.size,
-      storagePath: storagePathForDb,
-      mirrorStatus,
+      storagePath: filePath,
     });
     await createDatabaseJob({
       id: safeId,
       name: safeName,
       villageId,
       sizeBytes: stats.size,
-      storagePath: storagePathForDb,
+      storagePath: filePath,
     });
     return (await listPdfs()).find((pdf) => pdf.id === safeId);
   } catch (error) {
@@ -1859,13 +1803,13 @@ export async function processQueuedJobs(limit = 1) {
     } catch (workerError) {
       const rawMessage =
         workerError instanceof Error ? workerError.message : "Indexing failed";
-      const missingEverywhere = /Re-upload the PDF to index it|upload the PDF again/i.test(
-        rawMessage,
-      );
+      const missingEverywhere =
+        /Re-upload the PDF to index it|upload the PDF again/i.test(rawMessage);
       const bucketMissing =
-        /bucket.*not.*found|does.*not.*exist|Bucket not found/i.test(rawMessage);
-      const localOnlyFallback =
-        /Supabase is not configured/i.test(rawMessage);
+        /bucket.*not.*found|does.*not.*exist|Bucket not found/i.test(
+          rawMessage,
+        );
+      const localOnlyFallback = /Supabase is not configured/i.test(rawMessage);
       let message = rawMessage;
       if (bucketMissing) {
         message = `${rawMessage} (If you are running locally without the "${PDF_BUCKET}" bucket, re-upload the PDF while the same server process is running so the local copy can be used directly.)`;
