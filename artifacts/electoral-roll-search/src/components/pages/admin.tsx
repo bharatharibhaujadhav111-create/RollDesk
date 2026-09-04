@@ -415,13 +415,17 @@ export default function AdminPage() {
         size: file.size,
         sizeMB: totalMB.toFixed(2),
       });
-      const chunkSize = 4 * 1024 * 1024;
-      const chunkCount = Math.ceil(file.size / chunkSize);
-      const uploadId = `roll-${crypto.randomUUID()}`;
-      for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
+      const fallbackChunkSize = 4 * 1024 * 1024;
+      const fallbackChunkCount = Math.ceil(file.size / fallbackChunkSize);
+      const fallbackUploadId = `roll-${crypto.randomUUID()}`;
+      for (
+        let chunkIndex = 0;
+        chunkIndex < fallbackChunkCount;
+        chunkIndex += 1
+      ) {
         const chunk = file.slice(
-          chunkIndex * chunkSize,
-          Math.min(file.size, (chunkIndex + 1) * chunkSize),
+          chunkIndex * fallbackChunkSize,
+          Math.min(file.size, (chunkIndex + 1) * fallbackChunkSize),
         );
         const chunkResponse = await fetch(
           `/api/admin/pdfs/chunk?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`,
@@ -615,9 +619,9 @@ export default function AdminPage() {
           headers: {
             "Content-Type": "application/pdf",
             "X-PDF-Stream": "1",
-            "X-Upload-Id": uploadId,
+            "X-Upload-Id": fallbackUploadId,
             "X-Chunk-Index": String(chunkIndex),
-            "X-Chunk-Count": String(chunkCount),
+            "X-Chunk-Count": String(fallbackChunkCount),
           },
           body: chunk,
         });
@@ -632,9 +636,10 @@ export default function AdminPage() {
         }
         setUploadProgress({
           file: file.name,
-          percent: Math.round(((chunkIndex + 1) / chunkCount) * 100),
+          percent: Math.round(((chunkIndex + 1) / fallbackChunkCount) * 100),
           loadedMB:
-            Math.min(file.size, (chunkIndex + 1) * chunkSize) / (1024 * 1024),
+            Math.min(file.size, (chunkIndex + 1) * fallbackChunkSize) /
+            (1024 * 1024),
           totalMB,
         });
       }
