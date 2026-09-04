@@ -268,11 +268,21 @@ export async function POST(request: Request, context: RouteContext) {
       const uploadId = request.headers.get("x-upload-id") || "";
       const chunkIndex = Number(request.headers.get("x-chunk-index"));
       const chunkCount = Number(request.headers.get("x-chunk-count"));
+      console.log("[PDF Upload] Local chunk received", {
+        uploadId,
+        chunkIndex,
+        chunkCount,
+        hasBody: Boolean(request.body),
+        contentLength: request.headers.get("content-length"),
+      });
       if (
         !request.body ||
         !uploadId ||
         !Number.isInteger(chunkIndex) ||
-        !Number.isInteger(chunkCount)
+        !Number.isInteger(chunkCount) ||
+        chunkCount < 1 ||
+        chunkIndex < 0 ||
+        chunkIndex >= chunkCount
       ) {
         return NextResponse.json(
           { error: "Invalid upload chunk" },
