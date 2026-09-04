@@ -2,7 +2,7 @@
   "totalPdfs": 1,
   "totalRecords": 0,
   "status": "error",
-  "lastIndexedAt": "2026-09-04T01:53:47.719Z",
+  "lastIndexedAt": "2026-09-04T02:25:04.585Z",
   "indexVersion": 6,
   "progress": 100,
   "indexedPdfs": 0,
@@ -12,6 +12,6 @@
   "recordsWithRelativeName": 0,
   "recordsWithDetails": 0,
   "warnings": [
-    "roll-95d3ec9b-98b4-47cc-b387-1b511324a8f6.pdf: This scanned PDF needs OCR, but no OCR service is configured. Text-based PDFs are supported automatically."
+    "roll-987a9c55-c653-41c8-a045-21c1965eb031.pdf: This scanned PDF needs OCR, but no OCR service is configured. Text-based PDFs are supported automatically."
   ]
 }

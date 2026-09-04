@@ -15,6 +15,12 @@ function unauthorized(request: NextRequest) {
 }
 
 export function proxy(request: NextRequest) {
+  if (
+    request.nextUrl.pathname === "/api/admin/pdfs" ||
+    request.nextUrl.pathname.startsWith("/api/admin/pdfs/")
+  ) {
+    return NextResponse.next();
+  }
   const password = process.env.ADMIN_PASSWORD;
   if (!password) {
     return process.env.NODE_ENV === "production"
@@ -51,8 +57,7 @@ export const config = {
   matcher: [
     "/admin/:path*",
     {
-      source: "/api/admin/:path*",
-      missing: [{ type: "header", key: "x-pdf-stream" }],
+      source: "/api/admin/((?!pdfs(?:/|$)).*)",
     },
   ],
 };

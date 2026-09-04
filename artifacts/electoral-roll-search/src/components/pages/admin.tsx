@@ -420,14 +420,13 @@ export default function AdminPage() {
       const streamResult = await new Promise<{
         ok: boolean;
         status: number;
-        body: { error?: string; hint?: string } | null;
+        error?: string;
       }>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open("POST", streamUrl, true);
         xhr.setRequestHeader("Content-Type", "application/pdf");
         xhr.setRequestHeader("X-PDF-Stream", "1");
         xhr.setRequestHeader("X-PDF-Size", String(file.size));
-        xhr.responseType = "json";
         xhr.upload.onprogress = (event) => {
           if (!event.lengthComputable) return;
           setUploadProgress({
@@ -446,14 +445,20 @@ export default function AdminPage() {
             new Error("Upload was interrupted mid-transfer. Please retry."),
           );
         xhr.onload = () => {
-          const body =
-            xhr.response && typeof xhr.response === "object"
-              ? (xhr.response as { error?: string; hint?: string })
-              : null;
+          let error: string | undefined;
+          try {
+            const parsed = JSON.parse(xhr.responseText) as {
+              error?: string;
+              hint?: string;
+            };
+            error = [parsed.error, parsed.hint].filter(Boolean).join(" ");
+          } catch {
+            error = xhr.responseText?.slice(0, 240) || undefined;
+          }
           resolve({
             ok: xhr.status >= 200 && xhr.status < 300,
             status: xhr.status,
-            body,
+            error,
           });
         };
         try {
@@ -463,87 +468,23 @@ export default function AdminPage() {
         }
       });
 
-      if (streamResult.ok) {
-        setUploadProgress({
-          file: file.name,
-          percent: 100,
-          loadedMB: totalMB,
-          totalMB,
-        });
-        setNotice(`${file.name} uploaded successfully. Indexing started.`);
-        queryClient.invalidateQueries({ queryKey: getListPdfAssetsQueryKey() });
-        queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });
-        return true;
-      }
-
-      // Fall back to local chunked upload when the single-stream path is rejected
-      // for size limits (common on some hosts) — not for auth / validation errors.
-      const canChunkFallback =
-        streamResult.status === 413 ||
-        streamResult.status === 500 ||
-        streamResult.status === 502 ||
-        streamResult.status === 504;
-      if (!canChunkFallback) {
+      if (!streamResult.ok) {
         if (streamResult.status === 401 || streamResult.status === 403) {
           throw new Error(
             "Server rejected credentials — refresh the page and try again.",
           );
         }
+        if (streamResult.status === 413) {
+          throw new Error(
+            "File exceeded size limits — try compressing the PDF or split to fewer pages.",
+          );
+        }
         throw new Error(
-          [streamResult.body?.error, streamResult.body?.hint]
-            .filter(Boolean)
-            .join(" ") ||
+          streamResult.error ||
             `Upload failed (HTTP ${streamResult.status}). Please retry.`,
         );
       }
 
-      console.warn(
-        "[PDF Upload] Stream upload failed; falling back to chunks",
-        streamResult.status,
-        streamResult.body?.error,
-      );
-      const chunkSize = 2 * 1024 * 1024;
-      const chunkCount = Math.ceil(file.size / chunkSize) || 1;
-      const uploadId = `roll-${crypto.randomUUID()}`;
-      for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
-        const chunk = file.slice(
-          chunkIndex * chunkSize,
-          Math.min(file.size, (chunkIndex + 1) * chunkSize),
-        );
-        const chunkResponse = await fetch(
-          `/api/admin/pdfs/chunk?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/pdf",
-              "X-PDF-Stream": "1",
-              "X-Upload-Id": uploadId,
-              "X-Chunk-Index": String(chunkIndex),
-              "X-Chunk-Count": String(chunkCount),
-            },
-            body: chunk,
-          },
-        );
-        const chunkBody = (await chunkResponse.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        if (!chunkResponse.ok) {
-          throw new Error(
-            chunkBody?.error ||
-              `Chunk upload failed (HTTP ${chunkResponse.status}); please retry.`,
-          );
-        }
-        const uploadedBytes = Math.min(
-          file.size,
-          (chunkIndex + 1) * chunkSize,
-        );
-        setUploadProgress({
-          file: file.name,
-          percent: Math.round((uploadedBytes / file.size) * 100),
-          loadedMB: uploadedBytes / (1024 * 1024),
-          totalMB,
-        });
-      }
       setUploadProgress({
         file: file.name,
         percent: 100,

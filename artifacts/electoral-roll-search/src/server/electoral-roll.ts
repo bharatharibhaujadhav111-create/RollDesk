@@ -340,17 +340,7 @@ export async function appendPdfUploadChunk(asset: {
   chunkCount: number;
   stream: Readable | AsyncIterable<Uint8Array>;
 }) {
-  await fs.mkdir(pdfDirectory, { recursive: true });
-  await fs.mkdir(storageRoot, { recursive: true });
-  // Load village map before mutating it so a first-chunk request cannot wipe
-  // existing assignments when ensureStorage has not run yet.
-  if (!initialized) {
-    try {
-      villageAssignments = await readJson<Record<string, string>>(villagePath);
-    } catch {
-      villageAssignments = villageAssignments ?? {};
-    }
-  }
+  await ensurePdfWritePath();
   const safeId = asset.id.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
   if (
     !/^roll-[a-f0-9-]+$/i.test(safeId) ||
@@ -412,24 +402,14 @@ export async function appendPdfUploadChunk(asset: {
     sizeBytes: stats.size,
     storagePath: filePath,
   });
-  const villageMeta = VILLAGES.find((item) => item.id === asset.villageId);
-  // Avoid listPdfs()/getPageCount during the upload response — that path can
-  // OOM or time out on large electoral rolls and surface as an opaque HTTP 500.
   return {
     complete: true,
-    asset: {
+    asset: uploadedPdfAsset({
       id: safeId,
       name: asset.name,
       villageId: asset.villageId,
-      villageName: villageMeta?.name ?? "Unknown",
-      villageNameMr: villageMeta?.nameMr ?? "",
       sizeBytes: stats.size,
-      pageCount: 1,
-      uploadedAt: new Date().toISOString(),
-      status: "queued",
-      indexedRecords: 0,
-      fileUrl: `/api/files/${encodeURIComponent(safeId)}`,
-    },
+    }),
   };
 }
 
@@ -1308,6 +1288,39 @@ async function writeJson(filePath: string, value: unknown) {
   await fs.rename(temporaryPath, filePath);
 }
 
+async function ensurePdfWritePath() {
+  await fs.mkdir(pdfDirectory, { recursive: true });
+  await fs.mkdir(storageRoot, { recursive: true });
+  if (initialized) return;
+  try {
+    villageAssignments = await readJson<Record<string, string>>(villagePath);
+  } catch {
+    villageAssignments = villageAssignments ?? {};
+  }
+}
+
+function uploadedPdfAsset(asset: {
+  id: string;
+  name: string;
+  villageId: string;
+  sizeBytes: number;
+}) {
+  const villageMeta = VILLAGES.find((item) => item.id === asset.villageId);
+  return {
+    id: asset.id,
+    name: asset.name,
+    villageId: asset.villageId,
+    villageName: villageMeta?.name ?? "Unknown",
+    villageNameMr: villageMeta?.nameMr ?? "",
+    sizeBytes: asset.sizeBytes,
+    pageCount: 1,
+    uploadedAt: new Date().toISOString(),
+    status: "queued",
+    indexedRecords: 0,
+    fileUrl: `/api/files/${encodeURIComponent(asset.id)}`,
+  };
+}
+
 function canonicalFieldLabel(label: string) {
   const value = label.toLowerCase().replace(/\s+/g, " ").trim();
   if (
@@ -1558,14 +1571,12 @@ export async function listPdfs(query = "") {
           .stat(path.join(pdfDirectory, file))
           .catch(() => null);
         const id = path.basename(file, ".pdf");
-        let pageCount = 1;
-        try {
-          pageCount = await getPageCount(path.join(pdfDirectory, file));
-        } catch {
-          pageCount = records
+        const pageCount = Math.max(
+          1,
+          records
             .filter((record) => record.pdfId === id)
-            .reduce((max, record) => Math.max(max, record.pageNumber), 1);
-        }
+            .reduce((max, record) => Math.max(max, record.pageNumber), 1),
+        );
         let displayName = file;
         try {
           displayName =
@@ -1827,7 +1838,7 @@ export async function addPdfFromStream(
   stream: Readable | AsyncIterable<Uint8Array>,
   villageId = DEFAULT_VILLAGE_ID,
 ) {
-  await ensureStorage();
+  await ensurePdfWritePath();
   const baseId = id.replace(/[^a-z0-9-]/gi, "-").toLowerCase() || "roll";
   const database = getSupabaseAdmin();
   if (database) {
@@ -1903,7 +1914,12 @@ export async function addPdfFromStream(
       sizeBytes: stats.size,
       storagePath: filePath,
     });
-    return (await listPdfs()).find((pdf) => pdf.id === safeId);
+    return uploadedPdfAsset({
+      id: safeId,
+      name: safeName,
+      villageId,
+      sizeBytes: stats.size,
+    });
   } catch (error) {
     if (!renamed) {
       await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
