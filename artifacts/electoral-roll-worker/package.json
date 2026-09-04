@@ -6,10 +6,7 @@
   "scripts": {
     "worker": "tsx src/index.ts"
   },
-  "dependencies": {
-    "@supabase/supabase-js": "2.57.4",
-    "pdfjs-dist": "5.4.624"
-  },
+  "dependencies": {},
   "devDependencies": {
     "tsx": "^4.20.6"
   }

@@ -32,7 +32,7 @@ import {
   searchIndex,
   VILLAGES,
 } from "@/server/electoral-roll";
-import { getSupabaseAdmin, isSupabaseEnabled } from "@/server/supabase";
+import { isSupabaseEnabled } from "@/server/local-backend";
 
 export const runtime = "nodejs";
 

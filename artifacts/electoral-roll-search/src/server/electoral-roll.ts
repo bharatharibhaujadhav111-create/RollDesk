@@ -8,7 +8,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
-import { getSupabaseAdmin } from "@/server/supabase";
+import { getSupabaseAdmin } from "@/server/local-backend";
 
 const execFileAsync = promisify(execFile);
 
@@ -1883,8 +1883,7 @@ export async function addPdfFromStream(
 
 export async function processQueuedJobs(limit = 1) {
   const database = getSupabaseAdmin();
-  if (!database)
-    throw new Error("Supabase is required for the indexing worker");
+  if (!database) return 0;
 
   const staleBefore = new Date(Date.now() - 15 * 60 * 1000).toISOString();
   const { error: recoveryError } = await database
@@ -1951,7 +1950,7 @@ export async function processQueuedJobs(limit = 1) {
 
 export async function queueAllIndexJobs() {
   const database = getSupabaseAdmin();
-  if (!database) throw new Error("Supabase is required for queued indexing");
+  if (!database) return;
   const { data: assets, error } = await database
     .from("pdf_assets")
     .select("id");
