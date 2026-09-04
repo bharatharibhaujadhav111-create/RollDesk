@@ -14,7 +14,7 @@ function unauthorized(request: NextRequest) {
   });
 }
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const password = process.env.ADMIN_PASSWORD;
   if (!password) {
     return process.env.NODE_ENV === "production"
