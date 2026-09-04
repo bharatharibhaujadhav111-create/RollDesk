@@ -268,10 +268,12 @@ export async function POST(request: Request, context: RouteContext) {
       const uploadId = request.headers.get("x-upload-id") || "";
       const chunkIndex = Number(request.headers.get("x-chunk-index"));
       const chunkCount = Number(request.headers.get("x-chunk-count"));
+      const totalSize = Number(request.headers.get("x-upload-total-size"));
       console.log("[PDF Upload] Local chunk received", {
         uploadId,
         chunkIndex,
         chunkCount,
+        totalSize,
         hasBody: Boolean(request.body),
         contentLength: request.headers.get("content-length"),
       });
@@ -280,12 +282,19 @@ export async function POST(request: Request, context: RouteContext) {
         !uploadId ||
         !Number.isInteger(chunkIndex) ||
         !Number.isInteger(chunkCount) ||
+        !Number.isSafeInteger(totalSize) ||
         chunkCount < 1 ||
         chunkIndex < 0 ||
         chunkIndex >= chunkCount
       ) {
         return NextResponse.json(
           { error: "Invalid upload chunk" },
+          { status: 400 },
+        );
+      }
+      if (!VILLAGES.some((item) => item.id === params.village)) {
+        return NextResponse.json(
+          { error: "A valid village is required" },
           { status: 400 },
         );
       }
@@ -303,6 +312,7 @@ export async function POST(request: Request, context: RouteContext) {
         villageId: params.village,
         chunkIndex,
         chunkCount,
+        totalSize,
         stream,
       });
       if (result.complete) {

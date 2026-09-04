@@ -29,6 +29,7 @@ const statePath = path.join(storageRoot, "pdf-index-state.json");
 const villagePath = path.join(storageRoot, "pdf-villages.json");
 const PDF_BUCKET = "electoral-roll-pdfs";
 const STORAGE_UPLOAD_LIMIT_BYTES = 500 * 1024 * 1024;
+const UPLOAD_CHUNK_SIZE_BYTES = 2 * 1024 * 1024;
 const INDEX_FORMAT_VERSION = 6;
 
 export function storageKeyForPdf(pdfId: string) {
@@ -340,60 +341,108 @@ export async function appendPdfUploadChunk(asset: {
   villageId: string;
   chunkIndex: number;
   chunkCount: number;
+  totalSize: number;
   stream: Readable | AsyncIterable<Uint8Array>;
 }) {
   await ensurePdfWritePath();
   const safeId = asset.id.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
+  const expectedChunkCount = Math.ceil(
+    asset.totalSize / UPLOAD_CHUNK_SIZE_BYTES,
+  );
   if (
     !/^roll-[a-f0-9-]+$/i.test(safeId) ||
+    !Number.isSafeInteger(asset.totalSize) ||
+    asset.totalSize < 5 ||
+    asset.totalSize > STORAGE_UPLOAD_LIMIT_BYTES ||
     asset.chunkCount < 1 ||
+    asset.chunkCount !== expectedChunkCount ||
     asset.chunkIndex < 0 ||
     asset.chunkIndex >= asset.chunkCount
   ) {
     throw new Error("Invalid upload chunk metadata");
   }
-  const temporaryPath = path.join(pdfDirectory, `${safeId}.part`);
-  if (asset.chunkIndex === 0) await fs.rm(temporaryPath, { force: true });
-  else if (!(await fs.stat(temporaryPath).catch(() => null))) {
-    throw new Error("Upload chunk is out of order; please retry the upload");
-  }
-  const input =
-    asset.stream instanceof Readable
-      ? asset.stream
-      : Readable.from(asset.stream as AsyncIterable<Uint8Array>);
-  const beforeSize =
-    asset.chunkIndex === 0
-      ? 0
-      : ((await fs.stat(temporaryPath).catch(() => null))?.size ?? 0);
-  try {
-    await pipeline(
-      input,
-      fsSync.createWriteStream(temporaryPath, {
-        flags: asset.chunkIndex === 0 ? "w" : "a",
-      }),
-    );
-  } catch (error) {
-    if (asset.chunkIndex === 0) {
-      await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+  const expectedChunkSize = Math.min(
+    UPLOAD_CHUNK_SIZE_BYTES,
+    asset.totalSize - asset.chunkIndex * UPLOAD_CHUNK_SIZE_BYTES,
+  );
+  const chunkPath = path.join(
+    pdfDirectory,
+    `${safeId}.${asset.chunkIndex}.part`,
+  );
+  const filePath = path.join(pdfDirectory, `${safeId}.pdf`);
+  const existingChunk = await fs.stat(chunkPath).catch(() => null);
+  if (existingChunk) {
+    if (existingChunk.size !== expectedChunkSize) {
+      await fs.rm(chunkPath, { force: true });
+      throw new Error("Existing upload chunk has an invalid size");
     }
-    throw new Error(
-      `Failed to write upload chunk ${asset.chunkIndex + 1}/${asset.chunkCount}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
-  const afterSize = (await fs.stat(temporaryPath)).size;
-  if (afterSize <= beforeSize) {
-    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
-    throw new Error(
-      `Upload chunk ${asset.chunkIndex + 1}/${asset.chunkCount} arrived empty; please retry.`,
-    );
+  } else {
+    const temporaryPath = `${chunkPath}.uploading`;
+    await fs.rm(temporaryPath, { force: true });
+    const input =
+      asset.stream instanceof Readable
+        ? asset.stream
+        : Readable.from(asset.stream as AsyncIterable<Uint8Array>);
+    try {
+      await pipeline(
+        input,
+        fsSync.createWriteStream(temporaryPath, { flags: "wx" }),
+      );
+      const receivedSize = (await fs.stat(temporaryPath)).size;
+      if (receivedSize !== expectedChunkSize) {
+        throw new Error(
+          `Expected ${expectedChunkSize} bytes but received ${receivedSize}`,
+        );
+      }
+      await fs.rename(temporaryPath, chunkPath);
+    } catch (error) {
+      await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+      throw new Error(
+        `Failed to write upload chunk ${asset.chunkIndex + 1}/${asset.chunkCount}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
   if (asset.chunkIndex + 1 < asset.chunkCount) return { complete: false };
+
+  const completedFile = await fs.stat(filePath).catch(() => null);
+  if (completedFile?.size === asset.totalSize) {
+    return {
+      complete: true,
+      asset: uploadedPdfAsset({
+        id: safeId,
+        name: asset.name,
+        villageId: asset.villageId,
+        sizeBytes: completedFile.size,
+      }),
+    };
+  }
+  const temporaryPath = `${filePath}.uploading`;
+  await fs.rm(temporaryPath, { force: true });
+  for (let index = 0; index < asset.chunkCount; index += 1) {
+    const partPath = path.join(pdfDirectory, `${safeId}.${index}.part`);
+    const part = await fs.stat(partPath).catch(() => null);
+    const expectedSize = Math.min(
+      UPLOAD_CHUNK_SIZE_BYTES,
+      asset.totalSize - index * UPLOAD_CHUNK_SIZE_BYTES,
+    );
+    if (!part || part.size !== expectedSize) {
+      throw new Error("Upload chunks are incomplete; please retry the upload");
+    }
+    await pipeline(
+      fsSync.createReadStream(partPath),
+      fsSync.createWriteStream(temporaryPath, {
+        flags: index === 0 ? "w" : "a",
+      }),
+    );
+  }
   const stats = await fs.stat(temporaryPath);
-  if (stats.size > STORAGE_UPLOAD_LIMIT_BYTES) {
+  if (stats.size !== asset.totalSize) {
     await fs.rm(temporaryPath, { force: true });
-    throw new Error("PDF too large. Max upload size is 500MB.");
+    throw new Error(
+      `Uploaded PDF size mismatch: expected ${asset.totalSize} bytes, received ${stats.size}`,
+    );
   }
   const header = Buffer.alloc(5);
   const handle = await fs.open(temporaryPath, "r");
@@ -403,8 +452,12 @@ export async function appendPdfUploadChunk(asset: {
     await fs.rm(temporaryPath, { force: true });
     throw new Error("The uploaded file is not a valid PDF");
   }
-  const filePath = path.join(pdfDirectory, `${safeId}.pdf`);
   await fs.rename(temporaryPath, filePath);
+  for (let index = 0; index < asset.chunkCount; index += 1) {
+    await fs.rm(path.join(pdfDirectory, `${safeId}.${index}.part`), {
+      force: true,
+    });
+  }
   await fs.writeFile(path.join(pdfDirectory, `${safeId}.label`), asset.name);
   villageAssignments[safeId] = asset.villageId;
   await writeJson(villagePath, villageAssignments);
