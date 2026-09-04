@@ -490,7 +490,7 @@ export default function AdminPage() {
         queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });
         return true;
       }
-      if (prepareResponse.status !== 501 && prepareResponse.status !== 404) {
+      if (prepareResponse.status < 500 && prepareResponse.status !== 404) {
         const preparedError = (await prepareResponse
           .json()
           .catch(() => null)) as { error?: string } | null;
@@ -499,7 +499,7 @@ export default function AdminPage() {
             `Upload preparation failed (HTTP ${prepareResponse.status})`,
         );
       }
-      const chunkSize = 5 * 1024 * 1024;
+      const chunkSize = 4 * 1024 * 1024;
       const chunkCount = Math.ceil(file.size / chunkSize);
       const uploadId = `roll-${crypto.randomUUID()}`;
       for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
