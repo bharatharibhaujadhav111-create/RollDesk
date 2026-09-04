@@ -70,6 +70,7 @@
     "zod": "catalog:"
   },
   "dependencies": {
+    "@vercel/blob": "^2.8.0",
     "pdfjs-dist": "5.4.624"
   }
 }

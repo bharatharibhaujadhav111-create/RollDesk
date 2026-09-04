@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
+import { upload } from "@vercel/blob/client";
 import {
   getGetAdminStatsQueryKey,
   getListPdfAssetsQueryKey,
@@ -74,8 +75,7 @@ function postUploadChunk(options: {
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) options.onProgress(event.loaded);
     };
-    xhr.ontimeout = () =>
-      reject(new Error("Upload timed out. Please retry."));
+    xhr.ontimeout = () => reject(new Error("Upload timed out. Please retry."));
     xhr.onerror = () =>
       reject(new Error("Upload was interrupted mid-transfer. Please retry."));
     xhr.onload = () => {
@@ -489,7 +489,6 @@ export default function AdminPage() {
       return false;
     }
     try {
-      const uploadName = `${Date.now()}-${crypto.randomUUID()}-${file.name}`;
       const totalMB = file.size / (1024 * 1024);
       setUploadProgress({
         file: file.name,
@@ -497,48 +496,18 @@ export default function AdminPage() {
         loadedMB: 0,
         totalMB,
       });
-      // Hosts like Vercel reject single request bodies above ~4.5 MB (HTTP 413).
-      // Upload in 2 MB chunks with XHR progress so the bar moves immediately.
-      const chunkSize = 2 * 1024 * 1024;
-      const chunkCount = Math.ceil(file.size / chunkSize) || 1;
-      const uploadId = `roll-${crypto.randomUUID()}`;
-      console.log("[PDF Upload] Chunked upload:", {
-        uploadName,
-        uploadId,
-        size: file.size,
-        sizeMB: totalMB.toFixed(2),
-        chunkCount,
-        chunkSize,
+      await upload(`pdfs/${village}/${encodeURIComponent(file.name)}`, file, {
+        access: "public",
+        handleUploadUrl: "/api/admin/blob-upload",
+        onUploadProgress: ({ loaded, total }) => {
+          setUploadProgress({
+            file: file.name,
+            percent: Math.max(1, Math.round((loaded / total) * 100)),
+            loadedMB: loaded / (1024 * 1024),
+            totalMB,
+          });
+        },
       });
-      await fetch("/api/healthz").catch(() => undefined);
-
-      for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
-        const start = chunkIndex * chunkSize;
-        const end = Math.min(file.size, start + chunkSize);
-        await postUploadChunkWithRetry({
-          url: `/api/admin/pdfs/chunk?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`,
-          chunk: file.slice(start, end),
-          uploadId,
-          chunkIndex,
-          chunkCount,
-          totalSize: file.size,
-          onProgress: (sentBytes) => {
-            const loaded = Math.min(file.size, start + sentBytes);
-            setUploadProgress({
-              file: file.name,
-              percent: Math.max(1, Math.round((loaded / file.size) * 100)),
-              loadedMB: loaded / (1024 * 1024),
-              totalMB,
-            });
-          },
-        });
-        setUploadProgress({
-          file: file.name,
-          percent: Math.round((end / file.size) * 100),
-          loadedMB: end / (1024 * 1024),
-          totalMB,
-        });
-      }
 
       setUploadProgress({
         file: file.name,
