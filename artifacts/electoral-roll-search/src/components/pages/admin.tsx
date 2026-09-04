@@ -499,68 +499,51 @@ export default function AdminPage() {
             `Upload preparation failed (HTTP ${prepareResponse.status})`,
         );
       }
-      const url = `/api/admin/pdfs?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`;
-      const result = await new Promise<{
-        ok: boolean;
-        body: unknown;
-        status: number;
-        statusText: string;
-      }>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", url, true);
-        xhr.setRequestHeader("Content-Type", "application/pdf");
-        xhr.setRequestHeader("X-PDF-Stream", "1");
-        xhr.setRequestHeader("X-PDF-Size", String(file.size));
-        xhr.responseType = "json";
-        xhr.upload.onprogress = (event) => {
-          if (!event.lengthComputable) return;
-          const percent = event.total
-            ? Math.round((event.loaded / event.total) * 100)
-            : 0;
-          setUploadProgress({
-            file: file.name,
-            percent,
-            loadedMB: event.loaded / (1024 * 1024),
-            totalMB,
-          });
-        };
-        xhr.upload.onerror = () =>
-          reject(new Error("Network error while sending the PDF."));
-        xhr.onerror = () =>
-          reject(new Error("Upload failed. Check your network and retry."));
-        xhr.onload = () => {
-          const body = xhr.response ?? null;
-          resolve({
-            ok: xhr.status >= 200 && xhr.status < 300,
-            body,
-            status: xhr.status,
-            statusText: xhr.statusText,
-          });
-        };
-        try {
-          xhr.send(file);
-        } catch (sendError) {
-          reject(sendError);
-        }
-      });
-      if (!result.ok) {
-        const data = (result.body ?? null) as { error?: string } | null;
-        if (result.status === 413) {
-          console.error("[PDF Upload] Server rejected payload as too large:", {
-            status: 413,
-            size: file.size,
-          });
+      const chunkSize = 5 * 1024 * 1024;
+      const chunkCount = Math.ceil(file.size / chunkSize);
+      const uploadId = `roll-${crypto.randomUUID()}`;
+      for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
+        const chunk = file.slice(
+          chunkIndex * chunkSize,
+          Math.min(file.size, (chunkIndex + 1) * chunkSize),
+        );
+        const chunkUrl = `/api/admin/pdfs/chunk?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`;
+        const chunkResult = await new Promise<{ ok: boolean; status: number }>(
+          (resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open("POST", chunkUrl, true);
+            xhr.setRequestHeader("Content-Type", "application/pdf");
+            xhr.setRequestHeader("X-Upload-Id", uploadId);
+            xhr.setRequestHeader("X-Chunk-Index", String(chunkIndex));
+            xhr.setRequestHeader("X-Chunk-Count", String(chunkCount));
+            xhr.upload.onprogress = (event) => {
+              if (!event.lengthComputable) return;
+              const loaded = chunkIndex * chunkSize + event.loaded;
+              setUploadProgress({
+                file: file.name,
+                percent: Math.round((loaded / file.size) * 100),
+                loadedMB: loaded / (1024 * 1024),
+                totalMB,
+              });
+            };
+            xhr.onerror = () =>
+              reject(
+                new Error("Upload was interrupted mid-transfer. Please retry."),
+              );
+            xhr.onload = () =>
+              resolve({
+                ok: xhr.status >= 200 && xhr.status < 300,
+                status: xhr.status,
+              });
+            xhr.send(chunk);
+          },
+        );
+        if (!chunkResult.ok) {
           throw new Error(
-            `HTTP 413: The PDF exceeded the server body limit (${totalMB.toFixed(1)} MB sent). Try a smaller file or ask an administrator to raise the upload limit.`,
+            `Chunk upload failed (HTTP ${chunkResult.status}); please retry.`,
           );
         }
-        console.error("[PDF Upload] upload failed:", {
-          status: result.status,
-          error: data?.error,
-        });
-        throw new Error(data?.error || `HTTP ${result.status}`);
       }
-      console.log("[PDF Upload] Success:", result.body);
       setUploadProgress({
         file: file.name,
         percent: 100,

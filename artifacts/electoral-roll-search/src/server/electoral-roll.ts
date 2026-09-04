@@ -301,6 +301,78 @@ export async function finalizePdfUpload(asset: {
   return (await listPdfs()).find((pdf) => pdf.id === asset.id);
 }
 
+export async function appendPdfUploadChunk(asset: {
+  id: string;
+  name: string;
+  villageId: string;
+  chunkIndex: number;
+  chunkCount: number;
+  stream: Readable | AsyncIterable<Uint8Array>;
+}) {
+  await ensureStorage();
+  const safeId = asset.id.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
+  if (
+    !safeId ||
+    safeId !== asset.id ||
+    asset.chunkIndex < 0 ||
+    asset.chunkIndex >= asset.chunkCount
+  ) {
+    throw new Error("Invalid chunk upload metadata");
+  }
+  const temporaryPath = path.join(pdfDirectory, `.${safeId}.uploading`);
+  if (asset.chunkIndex === 0) await fs.rm(temporaryPath, { force: true });
+  else {
+    const expectedSize = await fs
+      .stat(temporaryPath)
+      .then((stats) => stats.size)
+      .catch(() => -1);
+    if (expectedSize < 0)
+      throw new Error("Upload chunk is out of order; please retry the upload");
+  }
+  const input =
+    asset.stream instanceof Readable
+      ? asset.stream
+      : Readable.from(asset.stream as AsyncIterable<Uint8Array>);
+  await pipeline(
+    input,
+    fsSync.createWriteStream(temporaryPath, {
+      flags: asset.chunkIndex === 0 ? "w" : "a",
+    }),
+  );
+  if (asset.chunkIndex + 1 < asset.chunkCount) {
+    return { complete: false };
+  }
+  const stats = await fs.stat(temporaryPath);
+  if (stats.size > STORAGE_UPLOAD_LIMIT_BYTES) {
+    await fs.rm(temporaryPath, { force: true });
+    throw new Error("PDF too large. Max upload size is 500MB.");
+  }
+  const head = Buffer.alloc(5);
+  const fd = await fs.open(temporaryPath, "r");
+  const read = await fd.read(head, 0, 5, 0);
+  await fd.close();
+  if (read.bytesRead < 5 || head.toString() !== "%PDF-") {
+    await fs.rm(temporaryPath, { force: true });
+    throw new Error("The uploaded file is not a valid PDF");
+  }
+  const filePath = path.join(pdfDirectory, `${safeId}.pdf`);
+  await fs.rename(temporaryPath, filePath);
+  await fs.writeFile(path.join(pdfDirectory, `${safeId}.label`), asset.name);
+  villageAssignments[safeId] = asset.villageId;
+  await writeJson(villagePath, villageAssignments);
+  await createDatabaseJob({
+    id: safeId,
+    name: asset.name,
+    villageId: asset.villageId,
+    sizeBytes: stats.size,
+    storagePath: filePath,
+  });
+  return {
+    complete: true,
+    asset: (await listPdfs()).find((pdf) => pdf.id === safeId),
+  };
+}
+
 async function persistIndexedPdf(pdfId: string, jobId?: string) {
   const database = getSupabaseAdmin();
   if (!database) return;
