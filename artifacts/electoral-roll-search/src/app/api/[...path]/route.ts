@@ -22,6 +22,7 @@ import {
   pdfDirectory,
   processQueuedJobs,
   queueAllIndexJobs,
+  rebuildIndex,
   removePdf,
   renamePdf,
   searchIndex,
@@ -39,11 +40,17 @@ export const fetchCache = "force-no-store";
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 
-function scheduleIndexing() {
-  if (!isSupabaseEnabled()) return;
+function scheduleIndexing(mode: "queue" | "rebuild", pdfId?: string) {
   after(async () => {
     try {
-      await processQueuedJobs(1);
+      if (isSupabaseEnabled()) {
+        await processQueuedJobs(1);
+        return;
+      }
+      if (mode === "rebuild") {
+        await ensureStorage();
+        await rebuildIndex(pdfId ? [pdfId] : undefined);
+      }
     } catch (error) {
       console.error("Background electoral roll indexing failed", error);
     }
@@ -64,6 +71,12 @@ function errorResponse(error: unknown) {
   }
   const rawMessage =
     error instanceof Error ? error.message : "Unknown server error";
+  if (/pdf too large/i.test(rawMessage)) {
+    return NextResponse.json({ error: rawMessage }, { status: 413 });
+  }
+  if (/not a valid pdf/i.test(rawMessage)) {
+    return NextResponse.json({ error: rawMessage }, { status: 400 });
+  }
   return NextResponse.json({ error: rawMessage }, { status: 500 });
 }
 
@@ -113,7 +126,7 @@ export async function GET(request: Request, context: RouteContext) {
       await ensureStorage();
       const pdfs = await listPdfs();
       const state = await getAdminStats();
-      scheduleIndexing();
+      scheduleIndexing("queue");
       return NextResponse.json({
         ...state,
         totalPdfs: pdfs.length,
@@ -184,6 +197,15 @@ export async function POST(request: Request, context: RouteContext) {
         );
       }
       const declaredSize = Number(request.headers.get("x-pdf-size") || 0);
+      const contentLength = Number(request.headers.get("content-length") || 0);
+      const maxBytes = 500 * 1024 * 1024;
+      const sizeHint = declaredSize || contentLength;
+      if (sizeHint > maxBytes) {
+        return NextResponse.json(
+          { error: "PDF too large. Max upload size is 500MB." },
+          { status: 413 },
+        );
+      }
       const id = `roll-${randomUUID()}`;
       console.log("[PDF Upload] Streaming upload started:", {
         id,
@@ -211,7 +233,7 @@ export async function POST(request: Request, context: RouteContext) {
         savedAs: asset?.id,
         sizeBytes: asset?.sizeBytes,
       });
-      scheduleIndexing();
+      scheduleIndexing("rebuild", asset?.id ?? id);
       return NextResponse.json(asset, { status: 201 });
     }
     if (
@@ -220,8 +242,12 @@ export async function POST(request: Request, context: RouteContext) {
       segments[1] === "index" &&
       segments[2] === "rebuild"
     ) {
-      await queueAllIndexJobs();
-      scheduleIndexing();
+      if (isSupabaseEnabled()) {
+        await queueAllIndexJobs();
+        scheduleIndexing("queue");
+      } else {
+        scheduleIndexing("rebuild");
+      }
       return NextResponse.json(
         { ...getIndexState(), status: "queued" },
         { status: 202 },

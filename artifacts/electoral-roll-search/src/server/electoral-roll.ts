@@ -31,7 +31,151 @@ const indexPath = path.join(storageRoot, "pdf-index.json");
 const statePath = path.join(storageRoot, "pdf-index-state.json");
 const villagePath = path.join(storageRoot, "pdf-villages.json");
 const PDF_BUCKET = "electoral-roll-pdfs";
+const STORAGE_UPLOAD_LIMIT_BYTES = 500 * 1024 * 1024;
 const INDEX_FORMAT_VERSION = 6;
+
+export function storageKeyForPdf(pdfId: string) {
+  return `pdfs/${pdfId}.pdf`;
+}
+
+function addWarning(message: string) {
+  if (state.warnings.includes(message)) return;
+  if (state.warnings.length < 50) state.warnings.push(message);
+  else state.warnings[state.warnings.length - 1] = message;
+}
+
+export async function mirrorPdfToStorage(
+  localPath: string,
+  storageKey: string,
+): Promise<"ok" | "skipped" | "failed-with-warning"> {
+  const database = getSupabaseAdmin();
+  if (!database) {
+    addWarning(
+      "Supabase admin client is not configured. PDF was saved locally only and will be lost if the server restarts on Vercel.",
+    );
+    return "skipped";
+  }
+  try {
+    const stream = fsSync.createReadStream(localPath);
+    const { data, error } = await database.storage
+      .from(PDF_BUCKET)
+      .upload(storageKey, stream as unknown as File, {
+        cacheControl: "3600",
+        upsert: true,
+        contentType: "application/pdf",
+        duplex: "half",
+      } as unknown as Parameters<
+        ReturnType<ReturnType<typeof database.storage.from>["upload"]>
+      >[2]);
+    void data;
+    if (error) {
+      const isMissingBucket =
+        /bucket.*not.*found|does.*not.*exist|Bucket not found/i.test(
+          error.message,
+        );
+      if (isMissingBucket) {
+        addWarning(
+          `Supabase Storage bucket "${PDF_BUCKET}" does not exist or is not accessible. PDF saved locally only. Create the "${PDF_BUCKET}" bucket in Supabase to enable durability across Vercel restarts.`,
+        );
+        return "failed-with-warning";
+      }
+      addWarning(
+        `Failed to mirror PDF to Supabase Storage (${storageKey}): ${error.message}. Local copy remains valid.`,
+      );
+      return "failed-with-warning";
+    }
+    return "ok";
+  } catch (error) {
+    addWarning(
+      `Unexpected error while mirroring PDF to Supabase Storage (${storageKey}): ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return "failed-with-warning";
+  }
+}
+
+export async function ensurePdfLocal(pdfId: string): Promise<string> {
+  await ensureStorage();
+  const localPath = path.join(pdfDirectory, `${pdfId}.pdf`);
+  const exists = await fs
+    .access(localPath)
+    .then(() => true)
+    .catch(() => false);
+  if (exists) return localPath;
+  const database = getSupabaseAdmin();
+  let storageKey = storageKeyForPdf(pdfId);
+  if (database) {
+    try {
+      const { data: asset, error: assetError } = await database
+        .from("pdf_assets")
+        .select("storage_path")
+        .eq("id", pdfId)
+        .maybeSingle();
+      if (assetError) {
+        throw new Error(`Could not load asset metadata: ${assetError.message}`);
+      }
+      if (asset?.storage_path) {
+        const candidate = asset.storage_path as string;
+        if (
+          candidate.startsWith("pdfs/") ||
+          /^[a-z]:\\|^\//i.test(candidate) === false
+        ) {
+          storageKey = candidate.startsWith("pdfs/")
+            ? candidate
+            : storageKeyForPdf(pdfId);
+        }
+      }
+    } catch {
+      // Use default storage key
+    }
+  }
+  if (!database) {
+    throw new Error(
+      `The source PDF for ${pdfId} is missing from the local data folder and Supabase is not configured. Re-upload the PDF to index it.`,
+    );
+  }
+  try {
+    const { data, error } = await database.storage
+      .from(PDF_BUCKET)
+      .download(storageKey);
+    if (error || !data) {
+      throw new Error(
+        error?.message ||
+          `Supabase Storage returned no data for ${storageKey}`,
+      );
+    }
+    const arrayBuffer = await data.arrayBuffer();
+    if (arrayBuffer.byteLength < 5) {
+      throw new Error("Downloaded PDF object was empty or too small");
+    }
+    const head = Buffer.from(arrayBuffer.slice(0, 5)).toString();
+    if (head !== "%PDF-") {
+      throw new Error(
+        "The downloaded object from Supabase Storage is not a valid PDF",
+      );
+    }
+    await fs.writeFile(localPath, new Uint8Array(arrayBuffer));
+    return localPath;
+  } catch (error) {
+    const storageMissing =
+      error instanceof Error &&
+      /bucket.*not.*found|does.*not.*exist|Bucket not found|No such object|not be found|storage .* unavailable/i.test(
+        error.message,
+      );
+    if (storageMissing) {
+      throw new Error(
+        `The source PDF for ${pdfId} is missing locally and could not be restored from Supabase Storage. Create the "${PDF_BUCKET}" bucket and re-upload the PDF, or upload the PDF again on this server instance.`,
+      );
+    }
+    throw new Error(
+      `The source PDF for ${pdfId} is missing from the local data folder and could not be restored from cloud storage (${
+        error instanceof Error ? error.message : String(error)
+      }). Re-upload the PDF to index it.`,
+    );
+  }
+}
+
 export const VILLAGES = [
   { id: "akolekati", name: "Akolekati", nameMr: "अकोलेकाटी" },
   { id: "banegaon", name: "Banegaon", nameMr: "बाणेगाव" },
@@ -1610,11 +1754,15 @@ export async function addPdfFromStream(
     safeId,
   );
   const previousVillage = villageAssignments[safeId];
+  let renamed = false;
   try {
     const input =
       stream instanceof Readable ? stream : Readable.from(stream as AsyncIterable<Uint8Array>);
     await pipeline(input, fsSync.createWriteStream(temporaryPath));
     const stats = await fs.stat(temporaryPath);
+    if (stats.size > STORAGE_UPLOAD_LIMIT_BYTES) {
+      throw new Error("PDF too large. Max upload size is 500MB.");
+    }
     const headBuffer = Buffer.alloc(5);
     const fd = await fs.open(temporaryPath, "r");
     const headRead = await fd.read(headBuffer, 0, 5, 0);
@@ -1627,20 +1775,34 @@ export async function addPdfFromStream(
       throw new Error("The uploaded file is not a valid PDF");
     }
     await fs.rename(temporaryPath, filePath);
+    renamed = true;
     await fs.writeFile(labelPath, safeName);
     villageAssignments[safeId] = villageId;
     await writeJson(villagePath, villageAssignments);
-    const storagePathLocal = path.join(pdfDirectory, `${safeId}.pdf`);
+    const storageKey = storageKeyForPdf(safeId);
+    const mirrorStatus = await mirrorPdfToStorage(filePath, storageKey);
+    const storagePathForDb =
+      mirrorStatus === "ok" || mirrorStatus === "failed-with-warning"
+        ? storageKey
+        : path.join(pdfDirectory, `${safeId}.pdf`);
+    console.log("[PDF Upload] Post-write mirror:", {
+      pdfId: safeId,
+      sizeBytes: stats.size,
+      storagePath: storagePathForDb,
+      mirrorStatus,
+    });
     await createDatabaseJob({
       id: safeId,
       name: safeName,
       villageId,
       sizeBytes: stats.size,
-      storagePath: storagePathLocal,
+      storagePath: storagePathForDb,
     });
     return (await listPdfs()).find((pdf) => pdf.id === safeId);
   } catch (error) {
-    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+    if (!renamed) {
+      await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+    }
     await fs.rm(filePath, { force: true }).catch(() => undefined);
     await fs.rm(labelPath, { force: true }).catch(() => undefined);
     if (hadVillageAssignment) villageAssignments[safeId] = previousVillage;
@@ -1691,54 +1853,28 @@ export async function processQueuedJobs(limit = 1) {
       throw new Error(`Could not claim index job: ${claimError.message}`);
     if (!claimed) continue;
 
-    const { data: asset, error: assetError } = await database
-      .from("pdf_assets")
-      .select("id, storage_path")
-      .eq("id", job.pdf_id)
-      .single();
-    if (assetError) {
-      await failDatabaseJob(job.pdf_id, job.id, assetError.message);
-      continue;
-    }
-
-    const temporaryPath = path.join(tmpdir(), `electoral-roll-${asset.id}.pdf`);
     try {
-      const localPath = path.join(pdfDirectory, `${asset.id}.pdf`);
-      const fileExists = await fs
-        .access(localPath)
-        .then(() => true)
-        .catch(() => false);
-      if (!fileExists) {
-        const maybeFallbackPath = asset.storage_path &&
-          /^[a-z]:\\|^\//i.test(asset.storage_path)
-          ? asset.storage_path
-          : "";
-        const fallbackExists = maybeFallbackPath
-          ? await fs
-              .access(maybeFallbackPath)
-              .then(() => true)
-              .catch(() => false)
-          : false;
-        if (!fallbackExists) {
-          throw new Error(
-            "The source PDF is missing from the local data/pdfs folder. Re-upload the PDF to index it.",
-          );
-        }
-        await fs.copyFile(maybeFallbackPath, temporaryPath);
-      } else {
-        await fs.copyFile(localPath, temporaryPath);
-      }
-      await fs.mkdir(pdfDirectory, { recursive: true });
-      if (fileExists) {
-        await fs.copyFile(localPath, path.join(pdfDirectory, `${asset.id}.pdf`));
-      }
-      await rebuildIndex([asset.id], new Map([[asset.id, job.id]]));
+      await ensurePdfLocal(job.pdf_id);
+      await rebuildIndex([job.pdf_id], new Map([[job.pdf_id, job.id]]));
     } catch (workerError) {
-      const message =
+      const rawMessage =
         workerError instanceof Error ? workerError.message : "Indexing failed";
-      await failDatabaseJob(asset.id, job.id, message);
-    } finally {
-      await fs.rm(temporaryPath, { force: true });
+      const missingEverywhere = /Re-upload the PDF to index it|upload the PDF again/i.test(
+        rawMessage,
+      );
+      const bucketMissing =
+        /bucket.*not.*found|does.*not.*exist|Bucket not found/i.test(rawMessage);
+      const localOnlyFallback =
+        /Supabase is not configured/i.test(rawMessage);
+      let message = rawMessage;
+      if (bucketMissing) {
+        message = `${rawMessage} (If you are running locally without the "${PDF_BUCKET}" bucket, re-upload the PDF while the same server process is running so the local copy can be used directly.)`;
+      } else if (localOnlyFallback) {
+        message = `${rawMessage} (Configured in local-only mode — upload and indexing must happen on the same server process to avoid cold-start data loss.)`;
+      } else if (missingEverywhere) {
+        message = rawMessage;
+      }
+      await failDatabaseJob(job.pdf_id, job.id, message);
     }
   }
   return jobs?.length ?? 0;
