@@ -272,6 +272,35 @@ async function createDatabaseJob(asset: {
   return data.id as string;
 }
 
+export async function preparePdfUpload(id: string) {
+  const database = getSupabaseAdmin();
+  if (!database) return null;
+  const storagePath = storageKeyForPdf(id);
+  const { data, error } = await database.storage
+    .from(PDF_BUCKET)
+    .createSignedUploadUrl(storagePath);
+  if (error || !data?.signedUrl) {
+    throw new Error(
+      `Could not prepare cloud upload: ${error?.message || "Supabase did not return a signed upload URL"}`,
+    );
+  }
+  return { storagePath, signedUrl: data.signedUrl };
+}
+
+export async function finalizePdfUpload(asset: {
+  id: string;
+  name: string;
+  villageId: string;
+  sizeBytes: number;
+}) {
+  await ensurePdfLocal(asset.id);
+  await createDatabaseJob({
+    ...asset,
+    storagePath: storageKeyForPdf(asset.id),
+  });
+  return (await listPdfs()).find((pdf) => pdf.id === asset.id);
+}
+
 async function persistIndexedPdf(pdfId: string, jobId?: string) {
   const database = getSupabaseAdmin();
   if (!database) return;

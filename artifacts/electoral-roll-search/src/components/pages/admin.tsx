@@ -403,7 +403,6 @@ export default function AdminPage() {
     }
     try {
       const uploadName = `${Date.now()}-${crypto.randomUUID()}-${file.name}`;
-      const url = `/api/admin/pdfs?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`;
       const totalMB = file.size / (1024 * 1024);
       setUploadProgress({
         file: file.name,
@@ -416,46 +415,134 @@ export default function AdminPage() {
         size: file.size,
         sizeMB: totalMB.toFixed(2),
       });
-      const result = await new Promise<{ ok: boolean; body: unknown; status: number; statusText: string }>(
-        (resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open("POST", url, true);
-          xhr.setRequestHeader("Content-Type", "application/pdf");
-          xhr.setRequestHeader("X-PDF-Stream", "1");
-          xhr.setRequestHeader("X-PDF-Size", String(file.size));
-          xhr.responseType = "json";
-          xhr.upload.onprogress = (event) => {
-            if (!event.lengthComputable) return;
-            const percent = event.total
-              ? Math.round((event.loaded / event.total) * 100)
-              : 0;
-            setUploadProgress({
-              file: file.name,
-              percent,
-              loadedMB: event.loaded / (1024 * 1024),
-              totalMB,
-            });
-          };
-          xhr.upload.onerror = () =>
-            reject(new Error("Network error while sending the PDF."));
-          xhr.onerror = () =>
-            reject(new Error("Upload failed. Check your network and retry."));
-          xhr.onload = () => {
-            const body = xhr.response ?? null;
-            resolve({
-              ok: xhr.status >= 200 && xhr.status < 300,
-              body,
-              status: xhr.status,
-              statusText: xhr.statusText,
-            });
-          };
-          try {
-            xhr.send(file);
-          } catch (sendError) {
-            reject(sendError);
-          }
-        },
+      const prepareResponse = await fetch(
+        `/api/admin/pdfs/upload-url?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`,
+        { method: "POST" },
       );
+      if (prepareResponse.ok) {
+        const prepared = (await prepareResponse.json()) as {
+          id: string;
+          name: string;
+          villageId: string;
+          signedUrl: string;
+        };
+        const cloudResult = await new Promise<{ ok: boolean; status: number }>(
+          (resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open("POST", prepared.signedUrl, true);
+            xhr.setRequestHeader("Content-Type", "application/pdf");
+            xhr.upload.onprogress = (event) => {
+              if (!event.lengthComputable) return;
+              setUploadProgress({
+                file: file.name,
+                percent: Math.round((event.loaded / event.total) * 100),
+                loadedMB: event.loaded / (1024 * 1024),
+                totalMB,
+              });
+            };
+            xhr.upload.onerror = () =>
+              reject(
+                new Error("Upload was interrupted mid-transfer. Please retry."),
+              );
+            xhr.onerror = () =>
+              reject(
+                new Error("Upload was interrupted mid-transfer. Please retry."),
+              );
+            xhr.onload = () =>
+              resolve({
+                ok: xhr.status >= 200 && xhr.status < 300,
+                status: xhr.status,
+              });
+            try {
+              xhr.send(file);
+            } catch (sendError) {
+              reject(sendError);
+            }
+          },
+        );
+        if (!cloudResult.ok)
+          throw new Error(`Cloud upload failed (HTTP ${cloudResult.status})`);
+        const finalizeResponse = await fetch("/api/admin/pdfs/finalize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: prepared.id,
+            name: prepared.name,
+            villageId: prepared.villageId,
+            sizeBytes: file.size,
+          }),
+        });
+        const finalized = (await finalizeResponse.json()) as { error?: string };
+        if (!finalizeResponse.ok) {
+          throw new Error(
+            finalized.error ||
+              `Finalize failed (HTTP ${finalizeResponse.status})`,
+          );
+        }
+        setUploadProgress({
+          file: file.name,
+          percent: 100,
+          loadedMB: totalMB,
+          totalMB,
+        });
+        setNotice(`${file.name} uploaded successfully. Indexing started.`);
+        queryClient.invalidateQueries({ queryKey: getListPdfAssetsQueryKey() });
+        queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });
+        return true;
+      }
+      if (prepareResponse.status !== 501 && prepareResponse.status !== 404) {
+        const preparedError = (await prepareResponse
+          .json()
+          .catch(() => null)) as { error?: string } | null;
+        throw new Error(
+          preparedError?.error ||
+            `Upload preparation failed (HTTP ${prepareResponse.status})`,
+        );
+      }
+      const url = `/api/admin/pdfs?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`;
+      const result = await new Promise<{
+        ok: boolean;
+        body: unknown;
+        status: number;
+        statusText: string;
+      }>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", url, true);
+        xhr.setRequestHeader("Content-Type", "application/pdf");
+        xhr.setRequestHeader("X-PDF-Stream", "1");
+        xhr.setRequestHeader("X-PDF-Size", String(file.size));
+        xhr.responseType = "json";
+        xhr.upload.onprogress = (event) => {
+          if (!event.lengthComputable) return;
+          const percent = event.total
+            ? Math.round((event.loaded / event.total) * 100)
+            : 0;
+          setUploadProgress({
+            file: file.name,
+            percent,
+            loadedMB: event.loaded / (1024 * 1024),
+            totalMB,
+          });
+        };
+        xhr.upload.onerror = () =>
+          reject(new Error("Network error while sending the PDF."));
+        xhr.onerror = () =>
+          reject(new Error("Upload failed. Check your network and retry."));
+        xhr.onload = () => {
+          const body = xhr.response ?? null;
+          resolve({
+            ok: xhr.status >= 200 && xhr.status < 300,
+            body,
+            status: xhr.status,
+            statusText: xhr.statusText,
+          });
+        };
+        try {
+          xhr.send(file);
+        } catch (sendError) {
+          reject(sendError);
+        }
+      });
       if (!result.ok) {
         const data = (result.body ?? null) as { error?: string } | null;
         if (result.status === 413) {
@@ -494,8 +581,6 @@ export default function AdminPage() {
       console.error("[PDF Upload] Fatal error:", message);
       setUploadError(`Upload failed: ${message}`);
       return false;
-    } finally {
-      setTimeout(() => setUploadProgress(null), 1500);
     }
   }
 
@@ -858,8 +943,8 @@ export default function AdminPage() {
               <span className="truncate pr-3">{uploadProgress.file}</span>
               <span className="font-mono-app text-accent">
                 {uploadProgress.loadedMB.toFixed(1)} /{" "}
-                {uploadProgress.totalMB.toFixed(1)} MB (
-                {uploadProgress.percent}%)
+                {uploadProgress.totalMB.toFixed(1)} MB ({uploadProgress.percent}
+                %)
               </span>
             </div>
             <div className="mt-2 h-2 overflow-hidden rounded-full bg-secondary">

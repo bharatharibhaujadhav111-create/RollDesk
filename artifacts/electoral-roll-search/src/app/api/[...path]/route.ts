@@ -15,12 +15,14 @@ import {
   addPdfFromStream,
   downloadPdf,
   ensureStorage,
+  finalizePdfUpload,
   getIndexState,
   getAdminStats,
   getSuggestions,
   listPdfs,
   pdfDirectory,
   processQueuedJobs,
+  preparePdfUpload,
   queueAllIndexJobs,
   rebuildIndex,
   removePdf,
@@ -199,6 +201,75 @@ export async function POST(request: Request, context: RouteContext) {
   const query = Object.fromEntries(new URL(request.url).searchParams);
 
   try {
+    if (
+      segments.length === 3 &&
+      segments[0] === "admin" &&
+      segments[1] === "pdfs" &&
+      segments[2] === "upload-url"
+    ) {
+      const params = UploadPdfQueryParams.parse(query);
+      if (!VILLAGES.some((item) => item.id === params.village)) {
+        return NextResponse.json(
+          { error: "A valid village is required" },
+          { status: 400 },
+        );
+      }
+      const id = `roll-${randomUUID()}`;
+      const upload = await preparePdfUpload(id).catch((error) => {
+        console.warn("[PDF Upload] Direct cloud upload unavailable:", error);
+        return null;
+      });
+      if (!upload) {
+        return NextResponse.json(
+          { error: "Direct cloud upload is unavailable" },
+          { status: 501 },
+        );
+      }
+      return NextResponse.json({
+        id,
+        name: params.filename,
+        villageId: params.village,
+        ...upload,
+      });
+    }
+    if (
+      segments.length === 3 &&
+      segments[0] === "admin" &&
+      segments[1] === "pdfs" &&
+      segments[2] === "finalize"
+    ) {
+      const body = (await request.json()) as {
+        id?: string;
+        name?: string;
+        villageId?: string;
+        sizeBytes?: number;
+      };
+      if (
+        !body.id ||
+        !body.name ||
+        !body.villageId ||
+        !Number.isSafeInteger(body.sizeBytes) ||
+        body.sizeBytes < 5
+      ) {
+        return NextResponse.json(
+          { error: "Upload metadata is incomplete" },
+          { status: 400 },
+        );
+      }
+      if (!VILLAGES.some((item) => item.id === body.villageId)) {
+        return NextResponse.json(
+          { error: "A valid village is required" },
+          { status: 400 },
+        );
+      }
+      const asset = await finalizePdfUpload({
+        id: body.id,
+        name: path.basename(body.name),
+        villageId: body.villageId,
+        sizeBytes: body.sizeBytes,
+      });
+      return NextResponse.json(asset, { status: 201 });
+    }
     if (
       segments.length === 3 &&
       segments[0] === "admin" &&
