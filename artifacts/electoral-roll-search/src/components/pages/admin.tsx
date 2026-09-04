@@ -434,9 +434,9 @@ export default function AdminPage() {
             headers: {
               "Content-Type": "application/pdf",
               "X-PDF-Stream": "1",
-              "X-Upload-Id": uploadId,
+              "X-Upload-Id": fallbackUploadId,
               "X-Chunk-Index": String(chunkIndex),
-              "X-Chunk-Count": String(chunkCount),
+              "X-Chunk-Count": String(fallbackChunkCount),
             },
             body: chunk,
           },
@@ -450,7 +450,10 @@ export default function AdminPage() {
               `Chunk upload failed (HTTP ${chunkResponse.status}); please retry.`,
           );
         }
-        const uploadedBytes = Math.min(file.size, (chunkIndex + 1) * chunkSize);
+        const uploadedBytes = Math.min(
+          file.size,
+          (chunkIndex + 1) * fallbackChunkSize,
+        );
         setUploadProgress({
           file: file.name,
           percent: Math.round((uploadedBytes / file.size) * 100),
