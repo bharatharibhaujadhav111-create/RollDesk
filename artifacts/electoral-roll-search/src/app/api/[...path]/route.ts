@@ -221,10 +221,7 @@ export async function POST(request: Request, context: RouteContext) {
         );
       }
       const id = `roll-${randomUUID()}`;
-      const upload = await preparePdfUpload(id).catch((error) => {
-        console.warn("[PDF Upload] Direct cloud upload unavailable:", error);
-        return null;
-      });
+      const upload = await preparePdfUpload(id);
       if (!upload) {
         return NextResponse.json(
           { error: "Direct cloud upload is unavailable" },
