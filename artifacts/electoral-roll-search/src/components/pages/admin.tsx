@@ -421,6 +421,7 @@ export default function AdminPage() {
           const xhr = new XMLHttpRequest();
           xhr.open("POST", url, true);
           xhr.setRequestHeader("Content-Type", "application/pdf");
+          xhr.setRequestHeader("X-PDF-Stream", "1");
           xhr.setRequestHeader("X-PDF-Size", String(file.size));
           xhr.responseType = "json";
           xhr.upload.onprogress = (event) => {

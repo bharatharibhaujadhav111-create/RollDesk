@@ -80,6 +80,44 @@ function errorResponse(error: unknown) {
   return NextResponse.json({ error: rawMessage }, { status: 500 });
 }
 
+function authorizeStreamingUpload(request: Request) {
+  const password = process.env.ADMIN_PASSWORD;
+  if (!password) {
+    return process.env.NODE_ENV === "production"
+      ? NextResponse.json(
+          { error: "Admin authentication is not configured" },
+          { status: 503 },
+        )
+      : null;
+  }
+  const authorization = request.headers.get("authorization");
+  const unauthorizedResponse = () =>
+    NextResponse.json(
+      { error: "Admin authentication required" },
+      {
+        status: 401,
+        headers: { "WWW-Authenticate": 'Basic realm="Roll Desk Admin"' },
+      },
+    );
+  if (!authorization?.startsWith("Basic ")) return unauthorizedResponse();
+  try {
+    const credentials = atob(authorization.slice(6));
+    const separator = credentials.indexOf(":");
+    const username = separator >= 0 ? credentials.slice(0, separator) : "";
+    const suppliedPassword =
+      separator >= 0 ? credentials.slice(separator + 1) : "";
+    if (
+      username !== (process.env.ADMIN_USER || "admin") ||
+      suppliedPassword !== password
+    ) {
+      return unauthorizedResponse();
+    }
+  } catch {
+    return unauthorizedResponse();
+  }
+  return null;
+}
+
 async function routePath(context: RouteContext) {
   return (await context.params).path ?? [];
 }
@@ -182,6 +220,8 @@ export async function POST(request: Request, context: RouteContext) {
       segments[0] === "admin" &&
       segments[1] === "pdfs"
     ) {
+      const authError = authorizeStreamingUpload(request);
+      if (authError) return authError;
       const params = UploadPdfQueryParams.parse(query);
       const village = VILLAGES.find((item) => item.id === params.village);
       if (!village) {
