@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import { after, NextResponse } from "next/server";
 import {
@@ -13,6 +14,7 @@ import {
 } from "@workspace/api-zod/generated/api";
 import {
   addPdfFromStream,
+  appendPdfUploadChunk,
   downloadPdf,
   ensureStorage,
   finalizePdfUpload,
@@ -253,6 +255,41 @@ export async function POST(request: Request, context: RouteContext) {
         uploadHandlerVersion: "tus-v2",
         ...upload,
       });
+    }
+    if (
+      segments.length === 3 &&
+      segments[0] === "admin" &&
+      segments[1] === "pdfs" &&
+      segments[2] === "chunk"
+    ) {
+      const authError = authorizeStreamingUpload(request);
+      if (authError) return authError;
+      const params = UploadPdfQueryParams.parse(query);
+      const uploadId = request.headers.get("x-upload-id") || "";
+      const chunkIndex = Number(request.headers.get("x-chunk-index"));
+      const chunkCount = Number(request.headers.get("x-chunk-count"));
+      if (
+        !request.body ||
+        !uploadId ||
+        !Number.isInteger(chunkIndex) ||
+        !Number.isInteger(chunkCount)
+      ) {
+        return NextResponse.json(
+          { error: "Invalid upload chunk" },
+          { status: 400 },
+        );
+      }
+      const result = await appendPdfUploadChunk({
+        id: uploadId,
+        name: path.basename(params.filename),
+        villageId: params.village,
+        chunkIndex,
+        chunkCount,
+        stream: Readable.fromWeb(
+          request.body as import("node:stream/web").ReadableStream,
+        ),
+      });
+      return NextResponse.json(result, { status: result.complete ? 201 : 202 });
     }
     if (
       segments.length === 3 &&

@@ -534,7 +534,7 @@ export default function AdminPage() {
         queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });
         return true;
       }
-      if (!prepareResponse.ok) {
+      if (!prepareResponse.ok && prepareResponse.status !== 501) {
         const rawResponse = await prepareResponse.text();
         let preparedError: { error?: string; hint?: string } | null = null;
         try {
@@ -552,6 +552,53 @@ export default function AdminPage() {
             `Upload preparation failed (HTTP ${prepareResponse.status}). Response: ${rawResponse.slice(0, 240) || "empty response"}`,
         );
       }
+      const chunkSize = 4 * 1024 * 1024;
+      const chunkCount = Math.ceil(file.size / chunkSize);
+      const uploadId = `roll-${crypto.randomUUID()}`;
+      for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
+        const chunk = file.slice(
+          chunkIndex * chunkSize,
+          Math.min(file.size, (chunkIndex + 1) * chunkSize),
+        );
+        const chunkUrl = `/api/admin/pdfs/chunk?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`;
+        const chunkResponse = await fetch(chunkUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/pdf",
+            "X-PDF-Stream": "1",
+            "X-Upload-Id": uploadId,
+            "X-Chunk-Index": String(chunkIndex),
+            "X-Chunk-Count": String(chunkCount),
+          },
+          body: chunk,
+        });
+        const chunkBody = (await chunkResponse.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        if (!chunkResponse.ok) {
+          throw new Error(
+            chunkBody?.error ||
+              `Chunk upload failed (HTTP ${chunkResponse.status}); please retry.`,
+          );
+        }
+        setUploadProgress({
+          file: file.name,
+          percent: Math.round(((chunkIndex + 1) / chunkCount) * 100),
+          loadedMB:
+            Math.min(file.size, (chunkIndex + 1) * chunkSize) / (1024 * 1024),
+          totalMB,
+        });
+      }
+      setUploadProgress({
+        file: file.name,
+        percent: 100,
+        loadedMB: totalMB,
+        totalMB,
+      });
+      setNotice(`${file.name} uploaded successfully. Indexing started.`);
+      queryClient.invalidateQueries({ queryKey: getListPdfAssetsQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });
+      return true;
     } catch (error) {
       const message =
         error instanceof Error
