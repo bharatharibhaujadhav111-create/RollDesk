@@ -289,13 +289,14 @@ export async function preparePdfUpload(id: string) {
     );
   }
   const url = new URL(supabaseUrl);
-  const storageHost = url.hostname.endsWith(".supabase.co")
-    ? url.hostname.replace(/\.supabase\.co$/, ".storage.supabase.co")
-    : url.hostname;
+  const configuredEndpoint = process.env.SUPABASE_STORAGE_UPLOAD_URL;
+  const endpoint = configuredEndpoint
+    ? new URL(configuredEndpoint).toString()
+    : `${url.protocol}//${url.hostname.replace(/\.supabase\.co$/, ".storage.supabase.co")}/storage/v1/upload/resumable`;
   return {
     storagePath,
     token: data.token,
-    endpoint: `${url.protocol}//${storageHost}/storage/v1/upload/resumable`,
+    endpoint,
   };
 }
 

@@ -235,6 +235,7 @@ export async function POST(request: Request, context: RouteContext) {
           {
             error: `Supabase upload preparation failed: ${message}`,
             hint: "Verify SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and the electoral-roll-pdfs bucket, then retry.",
+            uploadHandlerVersion: "tus-v2",
           },
           { status: 503 },
         );
@@ -249,6 +250,7 @@ export async function POST(request: Request, context: RouteContext) {
         id,
         name: params.filename,
         villageId: params.village,
+        uploadHandlerVersion: "tus-v2",
         ...upload,
       });
     }

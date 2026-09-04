@@ -535,14 +535,21 @@ export default function AdminPage() {
         return true;
       }
       if (!prepareResponse.ok) {
-        const preparedError = (await prepareResponse
-          .json()
-          .catch(() => null)) as { error?: string; hint?: string } | null;
+        const rawResponse = await prepareResponse.text();
+        let preparedError: { error?: string; hint?: string } | null = null;
+        try {
+          preparedError = JSON.parse(rawResponse) as {
+            error?: string;
+            hint?: string;
+          };
+        } catch {
+          preparedError = null;
+        }
         throw new Error(
           [preparedError?.error, preparedError?.hint]
             .filter(Boolean)
             .join(" ") ||
-            `Upload preparation failed (HTTP ${prepareResponse.status})`,
+            `Upload preparation failed (HTTP ${prepareResponse.status}). Response: ${rawResponse.slice(0, 240) || "empty response"}`,
         );
       }
     } catch (error) {
