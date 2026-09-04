@@ -277,29 +277,13 @@ export async function preparePdfUpload(id: string) {
   if (!database) return null;
   const storagePath = storageKeyForPdf(id);
   const supabaseUrl = process.env.SUPABASE_URL;
-  const { error: bucketError } = await database.storage.getBucket(PDF_BUCKET);
-  if (bucketError) {
-    const { error: createBucketError } = await database.storage.createBucket(
-      PDF_BUCKET,
-      {
-        public: false,
-        fileSizeLimit: STORAGE_UPLOAD_LIMIT_BYTES,
-        allowedMimeTypes: ["application/pdf"],
-      },
-    );
-    if (
-      createBucketError &&
-      !/already exists/i.test(createBucketError.message)
-    ) {
-      throw new Error(
-        `Could not access Supabase Storage bucket: ${createBucketError.message}`,
-      );
-    }
+  if (!supabaseUrl) {
+    throw new Error("SUPABASE_URL is not configured");
   }
   const { data, error } = await database.storage
     .from(PDF_BUCKET)
     .createSignedUploadUrl(storagePath);
-  if (error || !data?.token || !supabaseUrl) {
+  if (error || !data?.token) {
     throw new Error(
       `Could not prepare cloud upload: ${error?.message || "Supabase did not return a resumable upload token"}`,
     );

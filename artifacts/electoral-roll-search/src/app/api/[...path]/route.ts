@@ -221,7 +221,24 @@ export async function POST(request: Request, context: RouteContext) {
         );
       }
       const id = `roll-${randomUUID()}`;
-      const upload = await preparePdfUpload(id);
+      let upload;
+      try {
+        upload = await preparePdfUpload(id);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error("[PDF Upload] Preparation failed", {
+          id,
+          bucket: "electoral-roll-pdfs",
+          message,
+        });
+        return NextResponse.json(
+          {
+            error: `Supabase upload preparation failed: ${message}`,
+            hint: "Verify SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and the electoral-roll-pdfs bucket, then retry.",
+          },
+          { status: 503 },
+        );
+      }
       if (!upload) {
         return NextResponse.json(
           { error: "Direct cloud upload is unavailable" },

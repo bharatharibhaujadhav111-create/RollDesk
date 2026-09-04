@@ -537,9 +537,11 @@ export default function AdminPage() {
       if (!prepareResponse.ok) {
         const preparedError = (await prepareResponse
           .json()
-          .catch(() => null)) as { error?: string } | null;
+          .catch(() => null)) as { error?: string; hint?: string } | null;
         throw new Error(
-          preparedError?.error ||
+          [preparedError?.error, preparedError?.hint]
+            .filter(Boolean)
+            .join(" ") ||
             `Upload preparation failed (HTTP ${prepareResponse.status})`,
         );
       }
