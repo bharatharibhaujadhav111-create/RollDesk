@@ -415,6 +415,55 @@ export default function AdminPage() {
         size: file.size,
         sizeMB: totalMB.toFixed(2),
       });
+      const chunkSize = 4 * 1024 * 1024;
+      const chunkCount = Math.ceil(file.size / chunkSize);
+      const uploadId = `roll-${crypto.randomUUID()}`;
+      for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
+        const chunk = file.slice(
+          chunkIndex * chunkSize,
+          Math.min(file.size, (chunkIndex + 1) * chunkSize),
+        );
+        const chunkResponse = await fetch(
+          `/api/admin/pdfs/chunk?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/pdf",
+              "X-PDF-Stream": "1",
+              "X-Upload-Id": uploadId,
+              "X-Chunk-Index": String(chunkIndex),
+              "X-Chunk-Count": String(chunkCount),
+            },
+            body: chunk,
+          },
+        );
+        const chunkBody = (await chunkResponse.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        if (!chunkResponse.ok) {
+          throw new Error(
+            chunkBody?.error ||
+              `Chunk upload failed (HTTP ${chunkResponse.status}); please retry.`,
+          );
+        }
+        const uploadedBytes = Math.min(file.size, (chunkIndex + 1) * chunkSize);
+        setUploadProgress({
+          file: file.name,
+          percent: Math.round((uploadedBytes / file.size) * 100),
+          loadedMB: uploadedBytes / (1024 * 1024),
+          totalMB,
+        });
+      }
+      setUploadProgress({
+        file: file.name,
+        percent: 100,
+        loadedMB: totalMB,
+        totalMB,
+      });
+      setNotice(`${file.name} uploaded successfully. Indexing started.`);
+      queryClient.invalidateQueries({ queryKey: getListPdfAssetsQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getGetAdminStatsQueryKey() });
+      return true;
       const prepareResponse = await fetch(
         `/api/admin/pdfs/upload-url?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`,
         { method: "POST" },
