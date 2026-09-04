@@ -508,39 +508,51 @@ export default function AdminPage() {
           Math.min(file.size, (chunkIndex + 1) * chunkSize),
         );
         const chunkUrl = `/api/admin/pdfs/chunk?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`;
-        const chunkResult = await new Promise<{ ok: boolean; status: number }>(
-          (resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.open("POST", chunkUrl, true);
-            xhr.setRequestHeader("Content-Type", "application/pdf");
-            xhr.setRequestHeader("X-Upload-Id", uploadId);
-            xhr.setRequestHeader("X-Chunk-Index", String(chunkIndex));
-            xhr.setRequestHeader("X-Chunk-Count", String(chunkCount));
-            xhr.upload.onprogress = (event) => {
-              if (!event.lengthComputable) return;
-              const loaded = chunkIndex * chunkSize + event.loaded;
-              setUploadProgress({
-                file: file.name,
-                percent: Math.round((loaded / file.size) * 100),
-                loadedMB: loaded / (1024 * 1024),
-                totalMB,
-              });
-            };
-            xhr.onerror = () =>
-              reject(
-                new Error("Upload was interrupted mid-transfer. Please retry."),
-              );
-            xhr.onload = () =>
-              resolve({
-                ok: xhr.status >= 200 && xhr.status < 300,
-                status: xhr.status,
-              });
-            xhr.send(chunk);
-          },
-        );
+        const chunkResult = await new Promise<{
+          ok: boolean;
+          status: number;
+          error?: string;
+        }>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", chunkUrl, true);
+          xhr.setRequestHeader("Content-Type", "application/pdf");
+          xhr.setRequestHeader("X-Upload-Id", uploadId);
+          xhr.setRequestHeader("X-Chunk-Index", String(chunkIndex));
+          xhr.setRequestHeader("X-Chunk-Count", String(chunkCount));
+          xhr.upload.onprogress = (event) => {
+            if (!event.lengthComputable) return;
+            const loaded = chunkIndex * chunkSize + event.loaded;
+            setUploadProgress({
+              file: file.name,
+              percent: Math.round((loaded / file.size) * 100),
+              loadedMB: loaded / (1024 * 1024),
+              totalMB,
+            });
+          };
+          xhr.onerror = () =>
+            reject(
+              new Error("Upload was interrupted mid-transfer. Please retry."),
+            );
+          xhr.onload = () => {
+            let error: string | undefined;
+            try {
+              error = (JSON.parse(xhr.responseText) as { error?: string })
+                .error;
+            } catch {
+              error = undefined;
+            }
+            resolve({
+              ok: xhr.status >= 200 && xhr.status < 300,
+              status: xhr.status,
+              error,
+            });
+          };
+          xhr.send(chunk);
+        });
         if (!chunkResult.ok) {
           throw new Error(
-            `Chunk upload failed (HTTP ${chunkResult.status}); please retry.`,
+            chunkResult.error ||
+              `Chunk upload failed (HTTP ${chunkResult.status}); please retry.`,
           );
         }
       }

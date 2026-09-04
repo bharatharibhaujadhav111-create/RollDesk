@@ -265,6 +265,7 @@ export async function POST(request: Request, context: RouteContext) {
           request.body as import("node:stream/web").ReadableStream,
         ),
       });
+      if (result.complete) scheduleIndexing("rebuild", uploadId);
       return NextResponse.json(result, { status: result.complete ? 201 : 202 });
     }
     if (

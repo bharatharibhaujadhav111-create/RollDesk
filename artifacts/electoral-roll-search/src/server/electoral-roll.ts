@@ -309,7 +309,8 @@ export async function appendPdfUploadChunk(asset: {
   chunkCount: number;
   stream: Readable | AsyncIterable<Uint8Array>;
 }) {
-  await ensureStorage();
+  await fs.mkdir(pdfDirectory, { recursive: true });
+  await fs.mkdir(storageRoot, { recursive: true });
   const safeId = asset.id.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
   if (
     !safeId ||
