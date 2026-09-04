@@ -52,6 +52,65 @@ function formatDate(value: string | null | undefined) {
   }).format(new Date(value));
 }
 
+function postUploadChunk(options: {
+  url: string;
+  chunk: Blob;
+  uploadId: string;
+  chunkIndex: number;
+  chunkCount: number;
+  totalSize: number;
+  onProgress: (sentBytes: number) => void;
+}) {
+  return new Promise<{ error?: string; hint?: string }>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", options.url, true);
+    xhr.timeout = 120_000;
+    xhr.setRequestHeader("Content-Type", "application/pdf");
+    xhr.setRequestHeader("X-PDF-Stream", "1");
+    xhr.setRequestHeader("X-Upload-Id", options.uploadId);
+    xhr.setRequestHeader("X-Chunk-Index", String(options.chunkIndex));
+    xhr.setRequestHeader("X-Chunk-Count", String(options.chunkCount));
+    xhr.setRequestHeader("X-Upload-Total-Size", String(options.totalSize));
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) options.onProgress(event.loaded);
+    };
+    xhr.ontimeout = () =>
+      reject(new Error("Upload timed out. Please retry."));
+    xhr.onerror = () =>
+      reject(new Error("Upload was interrupted mid-transfer. Please retry."));
+    xhr.onload = () => {
+      let body: { error?: string; hint?: string } | null = null;
+      try {
+        body = JSON.parse(xhr.responseText) as {
+          error?: string;
+          hint?: string;
+        };
+      } catch {
+        body = null;
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(body ?? {});
+        return;
+      }
+      if (xhr.status === 401 || xhr.status === 403) {
+        reject(
+          new Error(
+            "Server rejected credentials — refresh the page and try again.",
+          ),
+        );
+        return;
+      }
+      reject(
+        new Error(
+          [body?.error, body?.hint].filter(Boolean).join(" ") ||
+            `Chunk ${options.chunkIndex + 1}/${options.chunkCount} failed (HTTP ${xhr.status}); please retry.`,
+        ),
+      );
+    };
+    xhr.send(options.chunk);
+  });
+}
+
 function StatSkeleton() {
   return (
     <div className="h-[116px] animate-pulse rounded-xl border border-border bg-card/75" />
@@ -321,12 +380,15 @@ export default function AdminPage() {
 
   const pdfParams = filter ? { q: filter } : undefined;
   const statsQuery = useGetAdminStats({
-    query: { queryKey: getGetAdminStatsQueryKey(), refetchInterval: 3000 },
+    query: {
+      queryKey: getGetAdminStatsQueryKey(),
+      refetchInterval: uploading ? false : 3000,
+    },
   });
   const assetsQuery = useListPdfAssets(pdfParams, {
     query: {
       queryKey: getListPdfAssetsQueryKey(pdfParams),
-      refetchInterval: 3000,
+      refetchInterval: uploading ? false : 3000,
     },
   });
   const rebuildIndex = useRebuildSearchIndex();
@@ -406,13 +468,13 @@ export default function AdminPage() {
       const totalMB = file.size / (1024 * 1024);
       setUploadProgress({
         file: file.name,
-        percent: 0,
+        percent: 1,
         loadedMB: 0,
         totalMB,
       });
       // Hosts like Vercel reject single request bodies above ~4.5 MB (HTTP 413).
-      // Upload in 3 MB chunks so every request stays under that platform limit.
-      const chunkSize = 3 * 1024 * 1024;
+      // Upload in 2 MB chunks with XHR progress so the bar moves immediately.
+      const chunkSize = 2 * 1024 * 1024;
       const chunkCount = Math.ceil(file.size / chunkSize) || 1;
       const uploadId = `roll-${crypto.randomUUID()}`;
       console.log("[PDF Upload] Chunked upload:", {
@@ -423,49 +485,28 @@ export default function AdminPage() {
         chunkCount,
         chunkSize,
       });
+      await fetch("/api/healthz").catch(() => undefined);
 
       for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
         const start = chunkIndex * chunkSize;
         const end = Math.min(file.size, start + chunkSize);
-        const chunk = file.slice(start, end);
-        const chunkResponse = await fetch(
-          `/api/admin/pdfs/chunk?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/pdf",
-              "X-PDF-Stream": "1",
-              "X-Upload-Id": uploadId,
-              "X-Chunk-Index": String(chunkIndex),
-              "X-Chunk-Count": String(chunkCount),
-              "X-Upload-Total-Size": String(file.size),
-            },
-            body: chunk,
+        await postUploadChunk({
+          url: `/api/admin/pdfs/chunk?village=${encodeURIComponent(village)}&filename=${encodeURIComponent(uploadName)}`,
+          chunk: file.slice(start, end),
+          uploadId,
+          chunkIndex,
+          chunkCount,
+          totalSize: file.size,
+          onProgress: (sentBytes) => {
+            const loaded = Math.min(file.size, start + sentBytes);
+            setUploadProgress({
+              file: file.name,
+              percent: Math.max(1, Math.round((loaded / file.size) * 100)),
+              loadedMB: loaded / (1024 * 1024),
+              totalMB,
+            });
           },
-        );
-        const chunkBody = (await chunkResponse.json().catch(() => null)) as {
-          error?: string;
-          hint?: string;
-        } | null;
-        if (!chunkResponse.ok) {
-          if (chunkResponse.status === 401 || chunkResponse.status === 403) {
-            throw new Error(
-              "Server rejected credentials — refresh the page and try again.",
-            );
-          }
-          if (chunkResponse.status === 413) {
-            throw new Error(
-              [chunkBody?.error, chunkBody?.hint]
-                .filter(Boolean)
-                .join(" ") ||
-                "A single upload part was rejected as too large. Please retry.",
-            );
-          }
-          throw new Error(
-            [chunkBody?.error, chunkBody?.hint].filter(Boolean).join(" ") ||
-              `Chunk ${chunkIndex + 1}/${chunkCount} failed (HTTP ${chunkResponse.status}); please retry.`,
-          );
-        }
+        });
         setUploadProgress({
           file: file.name,
           percent: Math.round((end / file.size) * 100),

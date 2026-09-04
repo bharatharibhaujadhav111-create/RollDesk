@@ -1461,7 +1461,10 @@ export async function ensureStorage() {
       await writeJson(indexPath, records);
     }
     state = { ...state, status: "ready" };
-    await rebuildIndex();
+    // Never block HTTP handlers (PDF uploads) on a full rebuild.
+    void rebuildIndex().catch((error) => {
+      console.error("[index] Background rebuild failed", error);
+    });
   }
 }
 
